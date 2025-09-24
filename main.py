@@ -1513,6 +1513,14 @@ class VPCRApp:
         
         # Processar cada card
         for i, item in enumerate(selected_items, 1):
+            # Adicionar separador antes de cada card (exceto o primeiro) para garantir espaço visível
+            if i > 1:
+                # Espaço superior antes da linha
+                story.append(Spacer(1, 18))
+                # Linha divisória
+                story.append(HRFlowable(width="100%", thickness=1, color=medium_gray))
+                # Espaço após a linha
+                story.append(Spacer(1, 18))
             # Card container com título
             card_elements = []
             
@@ -1682,23 +1690,8 @@ class VPCRApp:
                 
                 card_elements.append(main_table)
             
-            # Adicionar card completo como um grupo
+            # Adicionar card completo como um grupo (mantém título, workflow e tabela juntos)
             story.append(KeepTogether(card_elements))
-            
-            # Separação entre cards - sempre adicionar exceto no último
-            # Como enumerate começa em 1, comparar com len(selected_items)
-            # Adicionar separação apenas entre cards (não após o último)
-            if i < len(selected_items) - 1:
-                # Espaço entre cards
-                story.append(Spacer(1, 20))
-                
-                # Linha divisória simples
-                separator_line = Table([[""]], colWidths=[260*mm], rowHeights=[2*mm])
-                separator_line.setStyle(TableStyle([
-                    ('LINEABOVE', (0, 0), (-1, -1), 1, medium_gray),
-                ]))
-                story.append(separator_line)
-                story.append(Spacer(1, 20))
         
         # Gerar PDF
         doc.build(story)
