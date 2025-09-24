@@ -1042,7 +1042,7 @@ class VPCRApp:
             snack_bar.open = True
             self.page.update()
         
-        self.update_card_list()
+        self.update_card_list(preserve_scroll=True)
     
     def create_card(self, item):
         """Cria um card para um item"""
@@ -1071,7 +1071,7 @@ class VPCRApp:
         if "Status" in self.visible_fields:
             first_row_controls.append(
                 ft.Container(
-                    content=ft.Text(status_val, size=base_font + 1, color=ft.Colors.WHITE),
+                    content=ft.Text(status_val, size=base_font, color=ft.Colors.WHITE),
                     bgcolor=status_color,
                     padding=ft.padding.symmetric(horizontal=8, vertical=2),
                     border_radius=10
@@ -1163,10 +1163,16 @@ class VPCRApp:
             elevation=2
         )
     
-    def update_card_list(self):
+    def update_card_list(self, preserve_scroll=False):
         """Atualiza a lista de cards"""
         if hasattr(self, 'card_list'):
-            # ListView usa `controls` também
+            # Salvar posição do scroll se solicitado
+            scroll_position = None
+            if preserve_scroll and hasattr(self.card_list, 'scroll_to'):
+                try:
+                    scroll_position = getattr(self.card_list, 'scroll_offset', None)
+                except:
+                    pass
             
             # Salvar animações ativas antes de limpar os cards
             active_animations = {}
@@ -1186,6 +1192,32 @@ class VPCRApp:
                     pass  # O create_card já fará isso automaticamente
                     
             self.card_list.update()
+            
+            # Restaurar posição do scroll se havia uma salva
+            if scroll_position is not None:
+                try:
+                    self.card_list.scroll_to(offset=scroll_position)
+                except:
+                    pass
+
+    def update_card_selection_only(self):
+        """Atualiza apenas a aparência visual dos cards sem recriar a lista (preserva scroll)"""
+        if hasattr(self, 'card_list'):
+            # Iterar pelos cards existentes e atualizar apenas as cores
+            for i, card_control in enumerate(self.card_list.controls):
+                if i < len(self.filtered_data):
+                    item = self.filtered_data[i]
+                    item_id = item.get("ID")
+                    
+                    # Verificar se este card deveria estar selecionado
+                    colors = self.theme_manager.get_theme_colors()
+                    is_selected = self.selected_item_id == item_id
+                    new_card_bg = colors["selected_card"] if is_selected else colors["card_bg"]
+                    
+                    # Atualizar a cor do card
+                    if hasattr(card_control, 'color'):
+                        card_control.color = new_card_bg
+                        card_control.update()
 
     def _handle_card_checkbox_change(self, e, item_id):
         """Handler chamado quando um checkbox de card muda de estado"""
@@ -1195,7 +1227,7 @@ class VPCRApp:
             else:
                 if item_id in self.card_selection:
                     self.card_selection.remove(item_id)
-        except Exception:
+        except Exception as ex:
             # Em caso de erro, tentar ler o valor do evento
             try:
                 if getattr(e, 'data', None) in (True, 'true', 'True'):
@@ -1211,9 +1243,8 @@ class VPCRApp:
     def toggle_card_select_mode(self):
         """Ativa/desativa o modo de seleção de cards"""
         self.card_select_mode = not getattr(self, 'card_select_mode', False)
-        # Limpar seleção ao entrar em modo ou sair (escolha de UX)
-        if not self.card_select_mode:
-            self.card_selection.clear()
+        # Sempre limpar seleção ao entrar/sair do modo (garantir estado limpo)
+        self.card_selection.clear()
         # Atualizar footer visibilidade
         if hasattr(self, 'card_export_footer'):
             self.card_export_footer.visible = self.card_select_mode
@@ -1229,6 +1260,9 @@ class VPCRApp:
             self.card_export_footer.visible = False
         self._update_card_export_footer()
         self.update_card_list()
+        # Forçar atualização da página para garantir que os checkboxes sejam recriados
+        if hasattr(self, 'page'):
+            self.page.update()
 
     def _update_card_export_footer(self):
         """Atualiza o texto do footer com a contagem de itens selecionados"""
@@ -1241,7 +1275,7 @@ class VPCRApp:
                 pass
 
     def export_selected_cards(self):
-        """Exporta os cards selecionados para CSV em %APPDATA%/VPCR App/exports"""
+        """Exporta os cards selecionados para PDF com seletor de arquivo"""        
         if not self.card_selection:
             # mostrar mensagem
             if hasattr(self, 'page'):
@@ -1250,49 +1284,424 @@ class VPCRApp:
                 self.page.update()
             return
 
-        # Reunir dados dos items selecionados
-        selected_items = [item for item in self.filtered_data if item.get('ID') in self.card_selection]
-        if not selected_items:
-            # fallback: procurar em todos os dados
-            selected_items = [item for item in self.sample_data if item.get('ID') in self.card_selection]
+        # Abrir seletor de arquivo para PDF
+        def on_pdf_save_result(e: ft.FilePickerResultEvent):
+            if e.path:
+                try:
+                    # Reunir dados dos items selecionados NO MOMENTO do salvamento
+                    selected_items = [item for item in self.filtered_data if item.get('ID') in self.card_selection]
+                    if not selected_items:
+                        # fallback: procurar em todos os dados
+                        selected_items = [item for item in self.sample_data if item.get('ID') in self.card_selection]
+                    
+                    self._generate_pdf_report(selected_items, e.path)
+                    # Notificar sucesso
+                    if hasattr(self, 'page'):
+                        self.page.snack_bar = ft.SnackBar(content=ft.Text(f"PDF exportado com sucesso: {e.path}"))
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    # Sair do modo seleção
+                    self.cancel_card_selection()
+                    # Forçar atualização da interface
+                    if hasattr(self, 'page'):
+                        self.page.update()
+                except Exception as ex:
+                    if hasattr(self, 'page'):
+                        self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Erro ao gerar PDF: {ex}"))
+                        self.page.snack_bar.open = True
+                        self.page.update()
 
-        # Nome do arquivo
+        # Configurar e abrir seletor de arquivo
+        if not hasattr(self, 'pdf_save_dialog'):
+            self.pdf_save_dialog = ft.FilePicker(on_result=on_pdf_save_result)
+            self.page.overlay.append(self.pdf_save_dialog)
+            self.page.update()
+
+        # Sugerir nome padrão
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_name = f"vpcr_export_{timestamp}.pdf"
+        
+        self.pdf_save_dialog.save_file(
+            dialog_title="Salvar exportação PDF",
+            file_name=default_name,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["pdf"]
+        )
+
+    def _generate_pdf_report(self, selected_items, file_path):
+        """Gera o relatório PDF com os items selecionados"""
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, Image, HRFlowable
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm, inch
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.graphics.shapes import Drawing, Rect
+        from reportlab.platypus.flowables import HRFlowable
+        import datetime
+        import os
+        
+        # Cores limpas e profissionais
+        cummins_red = colors.Color(0.8, 0.1, 0.1)        # Vermelho Cummins
+        light_gray = colors.Color(0.95, 0.95, 0.95)      # Cinza claro
+        medium_gray = colors.Color(0.8, 0.8, 0.8)        # Cinza médio
+        dark_gray = colors.Color(0.3, 0.3, 0.3)          # Cinza escuro
+        
+        # Configurar documento PDF em landscape para mais espaço
+        doc = SimpleDocTemplate(
+            file_path,
+            pagesize=landscape(A4),
+            rightMargin=15*mm,
+            leftMargin=15*mm,
+            topMargin=15*mm,
+            bottomMargin=20*mm
+        )
+        
+        # Estilos aprimorados
+        styles = getSampleStyleSheet()
+        
+        # Título principal
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            spaceAfter=5,
+            spaceBefore=0,
+            textColor=cummins_red,
+            alignment=1,  # Center
+            fontName='Helvetica-Bold'
+        )
+        
+        # Subtítulo
+        subtitle_style = ParagraphStyle(
+            'SubTitle',
+            parent=styles['Normal'],
+            fontSize=12,
+            spaceAfter=20,
+            textColor=dark_gray,
+            alignment=1,  # Center
+            fontName='Helvetica'
+        )
+        
+        # Header de informações
+        info_style = ParagraphStyle(
+            'InfoStyle',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=8,
+            textColor=dark_gray,
+            fontName='Helvetica',
+            leftIndent=0
+        )
+        
+        # Título do card
+        card_title_style = ParagraphStyle(
+            'CardTitle',
+            parent=styles['Heading2'],
+            fontSize=16,
+            spaceAfter=8,
+            spaceBefore=15,
+            textColor=colors.white,
+            fontName='Helvetica-Bold',
+            leftIndent=8,
+            rightIndent=8
+        )
+        
+        # Campo label (negrito)
+        field_label_style = ParagraphStyle(
+            'FieldLabel',
+            parent=styles['Normal'],
+            fontSize=10,
+            spaceAfter=2,
+            textColor=cummins_red,
+            fontName='Helvetica-Bold'
+        )
+        
+        # Campo valor
+        field_value_style = ParagraphStyle(
+            'FieldValue',
+            parent=styles['Normal'],
+            fontSize=10,
+            spaceAfter=2,
+            textColor=colors.black,
+            fontName='Helvetica'
+        )
+        
+        # Conteúdo do PDF
+        story = []
+        
+        # Header decorativo com logo da Cummins
+        # Tentar carregar o ícone da Cummins
+        cummins_logo = None
         try:
-            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
-            out_dir = os.path.join(appdata, 'VPCR App', 'exports')
-            os.makedirs(out_dir, exist_ok=True)
-            import datetime
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            out_path = os.path.join(out_dir, f'vpcr_export_{timestamp}.csv')
-
-            # Determinar cabeçalho com base em visible_fields (ou todas as chaves do primeiro item)
-            headers = self.visible_fields if self.visible_fields else list(selected_items[0].keys())
-            # Garantir que ID esteja presente
-            if 'ID' not in headers:
-                headers = ['ID'] + headers
-
-            with open(out_path, 'w', encoding='utf-8') as f:
-                # escrever cabeçalho
-                f.write(','.join([h.replace(',', ' ') for h in headers]) + '\n')
-                for it in selected_items:
-                    row = []
-                    for h in headers:
-                        row.append(str(it.get(h, '')).replace(',', ' '))
-                    f.write(','.join(row) + '\n')
-
-            # Notificar sucesso
-            if hasattr(self, 'page'):
-                self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Exportado {len(selected_items)} item(s) para {out_path}"))
-                self.page.snack_bar.open = True
-                self.page.update()
-
-            # Sair do modo seleção
-            self.cancel_card_selection()
+            logo_path = os.path.join(os.path.dirname(__file__), "cummins.ico")
+            if os.path.exists(logo_path):
+                cummins_logo = Image(logo_path, width=12*mm, height=12*mm)
         except Exception as e:
-            if hasattr(self, 'page'):
-                self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Erro ao exportar: {e}"))
-                self.page.snack_bar.open = True
-                self.page.update()
+            print(f"Erro ao carregar logo da Cummins: {e}")
+        
+        # Criar conteúdo da célula vermelha: texto à esquerda e logo à direita
+        if cummins_logo:
+            # Tabela interna para texto + logo na mesma célula
+            logo_text_table = Table([['RELATÓRIO VPCR', cummins_logo]], colWidths=[170*mm, 30*mm])
+            logo_text_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'CENTER'),
+                ('VALIGN', (0, 0), (1, 0), 'MIDDLE'),
+                ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (0, 0), 20),
+                ('TEXTCOLOR', (0, 0), (0, 0), colors.white),
+                ('LEFTPADDING', (0, 0), (0, 0), 10),
+                ('RIGHTPADDING', (1, 0), (1, 0), 5),
+                ('TOPPADDING', (1, 0), (1, 0), 5),
+                ('BOTTOMPADDING', (1, 0), (1, 0), 5),
+            ]))
+            header_content = logo_text_table
+        else:
+            header_content = 'RELATÓRIO VPCR'
+        
+        header_table = Table([
+            ['', header_content, '']
+        ], colWidths=[50*mm, 200*mm, 50*mm])
+        
+        header_table.setStyle(TableStyle([
+            ('BACKGROUND', (1, 0), (1, 0), cummins_red),
+            ('TEXTCOLOR', (1, 0), (1, 0), colors.white),
+            ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+            ('VALIGN', (1, 0), (1, 0), 'MIDDLE'),
+            ('FONTNAME', (1, 0), (1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (1, 0), (1, 0), 20),
+            ('BOTTOMPADDING', (1, 0), (1, 0), 15),
+            ('TOPPADDING', (1, 0), (1, 0), 15),
+            ('LEFTPADDING', (1, 0), (1, 0), 15),
+            ('ROUNDEDCORNERS', [5, 5, 5, 5]),
+        ]))
+        
+        story.append(header_table)
+        story.append(Spacer(1, 15))
+        
+        # Linha divisória elegante
+        story.append(HRFlowable(width="100%", thickness=1, color=medium_gray))
+        story.append(Spacer(1, 15))
+        
+        # Informações do relatório em caixas
+        info_data = [
+            ['Data de Geração:', datetime.datetime.now().strftime('%d/%m/%Y às %H:%M')],
+            ['Total de Cards:', str(len(selected_items))],
+            ['Usuário:', 'VPCR System']
+        ]
+        
+        info_table = Table(info_data, colWidths=[60*mm, 80*mm])
+        info_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), light_gray),
+            ('TEXTCOLOR', (0, 0), (0, -1), cummins_red),
+            ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
+            ('GRID', (0, 0), (-1, -1), 1, colors.white),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        
+        story.append(info_table)
+        story.append(Spacer(1, 25))
+        
+        # Processar cada card
+        for i, item in enumerate(selected_items, 1):
+            # Card container com título
+            card_elements = []
+            
+            # Header do card
+            card_title = f"{item.get('Title', 'Untitled')}"
+            
+            # Título do card com background colorido
+            title_table = Table([[card_title]], colWidths=[260*mm])
+            title_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), cummins_red),
+                ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 14),
+                ('LEFTPADDING', (0, 0), (-1, -1), 15),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 9),
+                # Bordas arredondadas apenas no topo, retas embaixo para conectar
+                ('ROUNDEDCORNERS', [8, 8, 0, 0]),
+            ]))
+            card_elements.append(title_table)
+            
+            # Sem espaçamento para conectar diretamente com o status
+            
+            # Criar linha de status visual como na imagem
+            # Definir os status do workflow exatamente como na interface
+            workflow_steps = [
+                "Draft", "Preliminary Change Manager Review", "Preliminary Review",
+                "Cross Functional Review", "Secondary Change Manager Review", 
+                "Pending Resource Assignment", "Cost and Lead Time Analysis",
+                "Engineering Work in Progress", "Purchasing Work in Progress",
+                "Pending Plant Implementation", "Work Complete"
+            ]
+            
+            # Criar status visual como uma linha mesclada (estilo Excel)
+            status_cells = []
+            for i, step in enumerate(workflow_steps):
+                is_completed = i <= 2  # Primeiros 3 completos
+                
+                if is_completed:
+                    # Ícone + texto em uma célula
+                    status_content = f"✓\n{step}"
+                    color = colors.Color(0, 0.6, 0)  # Verde
+                else:
+                    # Ícone + texto em uma célula  
+                    status_content = f"○\n{step}"
+                    color = colors.Color(0.5, 0.5, 0.5)  # Cinza
+                
+                status_cells.append(Paragraph(status_content, ParagraphStyle(
+                    'StatusCell',
+                    fontSize=7,
+                    alignment=1,  # Centro
+                    textColor=color,
+                    leading=8
+                )))
+            
+            # Criar tabela com uma única linha (como linha mesclada do Excel)
+            # Largura total igual à tabela principal: 260mm dividido em 11 colunas
+            workflow_visual_table = Table([status_cells], 
+                                        colWidths=[260*mm / 11] * 11,
+                                        rowHeights=[15*mm])
+            workflow_visual_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                ('LEFTPADDING', (0, 0), (-1, -1), 1),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+                # Background branco
+                ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+                # Bordas apenas no topo e laterais (sem borda inferior para conectar)
+                ('LINEABOVE', (0, 0), (-1, 0), 1, medium_gray),
+                ('LINEBEFORE', (0, 0), (0, -1), 1, medium_gray),
+                ('LINEAFTER', (-1, 0), (-1, -1), 1, medium_gray),
+            ]))
+            
+            # Adicionar a linha de status visual ao card
+            card_elements.append(workflow_visual_table)
+            
+            # Lista completa de todos os campos incluindo novos
+            all_fields = [
+                ("Title", item.get("Title", "")),
+                ("ID", item.get("ID", "")),
+                ("Status", item.get("Status", "")),
+                ("Category", item.get("Category", "")),
+                ("Initiated Date", item.get("Initiated Date", "")),
+                ("Last Update", item.get("Last Update", "")),
+                ("Closed Date", item.get("Closed Date", "")),
+                ("Supplier", item.get("Supplier", "")),
+                ("Part Numbers", item.get("PNs", "")),
+                ("Plants Affected", item.get("Plants Affected", "")),
+                ("Requestor", item.get("Requestor", "")),
+                ("Sourcing Manager", item.get("Sourcing Manager", "") or item.get("Sourcing", "")),
+                ("SQIE", item.get("SQIE", "")),
+                ("Continuity", item.get("Continuity", "")),
+                ("RFQ", item.get("RFQ", "")), ("DRA", item.get("DRA", "")),
+                ("DQR", item.get("DQR", "")), ("LOI", item.get("LOI", "")),
+                ("Tooling", item.get("Tooling", "")), ("Drawing", item.get("Drawing", "")),
+                ("PO Alfa", item.get("PO Alfa", "")), ("SR", item.get("SR", "")),
+                ("Deviation", item.get("Deviation", "")), ("PO Beta", item.get("PO Beta", "")),
+                ("PPAP", item.get("PPAP", "")), ("GBPA", item.get("GBPA", "")),
+                ("EDI", item.get("EDI", "")), ("SCR", item.get("SCR", "")),
+                ("Comments", item.get("Comments", "")),
+                ("Link", item.get("Link", "")),
+                ("Log", item.get("Log", ""))
+            ]
+            
+            # Filtrar apenas campos com conteúdo
+            filled_fields = [(label, str(value)) for label, value in all_fields if value and str(value).strip()]
+            
+            # Organizar campos em duas colunas por linha
+            section_data = []
+            for j in range(0, len(filled_fields), 2):
+                row = []
+                
+                # Primeira coluna
+                if j < len(filled_fields):
+                    label1, value1 = filled_fields[j]
+                    row.extend([
+                        Paragraph(f"<b>{label1}:</b>", field_label_style),
+                        Paragraph(str(value1), field_value_style)
+                    ])
+                else:
+                    row.extend(['', ''])
+                
+                # Segunda coluna
+                if j + 1 < len(filled_fields):
+                    label2, value2 = filled_fields[j + 1]
+                    row.extend([
+                        Paragraph(f"<b>{label2}:</b>", field_label_style),
+                        Paragraph(str(value2), field_value_style)
+                    ])
+                else:
+                    row.extend(['', ''])
+                
+                section_data.append(row)
+            
+            if section_data:
+                # Remover última linha vazia
+                if section_data and all(cell == '' for cell in section_data[-1]):
+                    section_data.pop()
+                
+                # Tabela principal do card
+                main_table = Table(section_data, colWidths=[60*mm, 70*mm, 60*mm, 70*mm])
+                main_table.setStyle(TableStyle([
+                    # Background alternado suave para melhor leitura
+                    ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, light_gray] * 50),
+                    # Bordas sem o topo (para conectar com status)
+                    ('GRID', (0, 0), (-1, -1), 0.5, medium_gray),
+                    ('LINEBEFORE', (0, 0), (0, -1), 1, medium_gray),
+                    ('LINEAFTER', (-1, 0), (-1, -1), 1, medium_gray),
+                    ('LINEBELOW', (0, -1), (-1, -1), 1, medium_gray),
+                    # Alinhamento
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    # Padding
+                    ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    # Bordas: superior reta (conecta com status), inferior arredondada
+                    ('ROUNDEDCORNERS', [0, 0, 8, 8]),
+                ]))
+                
+
+                
+                card_elements.append(main_table)
+            
+            # Adicionar card completo como um grupo
+            story.append(KeepTogether(card_elements))
+            
+            # Separação entre cards - sempre adicionar exceto no último
+            # Como enumerate começa em 1, comparar com len(selected_items)
+            # Adicionar separação apenas entre cards (não após o último)
+            if i < len(selected_items) - 1:
+                # Espaço entre cards
+                story.append(Spacer(1, 20))
+                
+                # Linha divisória simples
+                separator_line = Table([[""]], colWidths=[260*mm], rowHeights=[2*mm])
+                separator_line.setStyle(TableStyle([
+                    ('LINEABOVE', (0, 0), (-1, -1), 1, medium_gray),
+                ]))
+                story.append(separator_line)
+                story.append(Spacer(1, 20))
+        
+        # Gerar PDF
+        doc.build(story)
 
     def open_todo_dialog(self, item):
         """Abre o diálogo de gerenciamento de TODOs para um item"""
@@ -1843,8 +2252,8 @@ class VPCRApp:
         # Atualizar a UI dos containers direitos se eles existirem
         self.update_detail_containers()
         
-        # Atualizar a lista de cards para refletir a seleção visual
-        self.update_card_list()
+        # Atualizar apenas a aparência dos cards sem recriar a lista
+        self.update_card_selection_only()
 
     def update_detail_containers(self):
         """Atualiza os containers de detalhes após seleção de item"""
@@ -2445,7 +2854,7 @@ class VPCRApp:
                         ft.Container(
                             content=ft.Text(
                                 display_text,
-                                size=9,
+                                size=10,
                                 color=colors["text_container_primary"],
                                 text_align=ft.TextAlign.CENTER,
                                 max_lines=2,
@@ -2648,7 +3057,7 @@ class VPCRApp:
             self.visible_fields = [cb.label for cb in fields_checkboxes if cb.value]
             # Salvar configuração
             self.save_visible_fields()
-            self.update_card_list()
+            self.update_card_list(preserve_scroll=True)
             # notificação
             sb = ft.SnackBar(content=ft.Text("Campos visíveis atualizados"))
             self.page.snack_bar = sb
