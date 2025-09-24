@@ -22,7 +22,8 @@ class ThemeManager:
                 "text_container_secondary": "#b3b3b3",  # Texto secundário dentro de containers
                 "field_bg": "#2d2d2d",
                 "field_text": "#ffffff",
-                "field_border": "#444444"
+                "field_border": "#444444",
+                "cor_font_settings": "#ffffff"       # Cor específica para textos em settings
             },
             "dracula": {
                 "primary": "#282a36",
@@ -30,7 +31,7 @@ class ThemeManager:
                 "surface": "#6272a4",
                 "on_surface": "#f8f8f2",
                 "on_primary": "#f8f8f2",
-                "accent": "#b783ff",
+                "accent": "#a676ff",
                 "card_bg": "#44475a",
                 "border": "#6272a4",
                 "text_primary": "#f8f8f2",           # Texto fora de containers
@@ -39,24 +40,26 @@ class ThemeManager:
                 "text_container_secondary": "#8be9fd",  # Texto secundário dentro de containers
                 "field_bg": "#44475a",
                 "field_text": "#8be9fd",
-                "field_border": "#6272a4"
+                "field_border": "#6272a4",
+                "cor_font_settings": "#f8f8f2"       # Cor específica para textos em settings (laranja clara)
             },
             "light_dracula": {
                 "primary": "#f8f8f2",
                 "secondary": "#e6e6fa",
-                "surface": "#bd93f9",
+                "surface": "#939df9",
                 "on_surface": "#282a36",
                 "on_primary": "#282a36",
-                "accent": "#bd93f9",
+                "accent": "#939df9",
                 "card_bg": "#ffffff",
-                "border": "#bd93f9",
+                "border": "#bd93f939",
                 "text_primary": "#282a36",        # Texto fora de containers
                 "text_secondary": "#6272a4",      # Texto secundário fora de containers
                 "text_container_primary": "#282a36",   # Texto principal dentro de containers
                 "text_container_secondary": "#44475a", # Texto secundário dentro de containers
                 "field_bg": "#ffffff",
                 "field_text": "#282a36",
-                "field_border": "#bd93f9"
+                "field_border": "#939df9",
+                "cor_font_settings": "#495057"   # Cor específica para textos em settings
             }
         }
         self.current_theme = "dark"
@@ -124,6 +127,8 @@ class VPCRApp:
         self.filtered_data = self.sample_data.copy()
         # Campos visíveis nos cards (configurável nas Settings)
         self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
+        # Carregar configuração persistida de campos visíveis (se existir)
+        self.load_visible_fields()
         
         # Campos detalhados (valores mostrados no painel direito)
         # Inicializar com valores de exemplo; chaves seguem os rótulos originais
@@ -216,6 +221,39 @@ class VPCRApp:
                 on_surface=colors["on_surface"]
             )
         )
+
+    # ===================== Persistência de Campos Visíveis =====================
+    def save_visible_fields(self):
+        """Salva a lista de campos visíveis em arquivo JSON no diretório de settings do app."""
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            settings_dir = os.path.join(appdata, 'VPCR App', 'settings')
+            os.makedirs(settings_dir, exist_ok=True)
+            path = os.path.join(settings_dir, 'visible_fields.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({"visible_fields": self.visible_fields}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # Falhar silenciosamente para não quebrar a UI
+
+    def load_visible_fields(self):
+        """Carrega os campos visíveis salvos anteriormente (se existir)."""
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            settings_dir = os.path.join(appdata, 'VPCR App', 'settings')
+            path = os.path.join(settings_dir, 'visible_fields.json')
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    loaded = data.get('visible_fields', [])
+                    # Validar contra headers disponíveis (exceto ID)
+                    allowed = [h for h in self.db_headers if h != 'ID']
+                    # Manter ordem conforme db_headers original
+                    self.visible_fields = [h for h in self.db_headers if h in loaded and h != 'ID']
+                    # Garantir fallback mínimo
+                    if not self.visible_fields:
+                        self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
+        except Exception:
+            pass
     
     def create_components(self):
         """Cria os componentes da interface"""
@@ -383,6 +421,10 @@ class VPCRApp:
             )
 
         rows.append(ft.Row(first_row_controls, alignment=ft.MainAxisAlignment.SPACE_BETWEEN))
+
+        # Adicionar linha "Title:" abaixo do título se Title estiver nos campos visíveis
+        if "Title" in self.visible_fields:
+            rows.append(ft.Row([ft.Text("Title:", size=12, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(title_text, size=12, color=colors["text_container_secondary"])], spacing=8))
 
         # outras fields (excluir Title já mostrado)
         for f in self.visible_fields:
@@ -1196,7 +1238,7 @@ class VPCRApp:
             # Ícone de status
             icon = ft.Icon(
                 ft.Icons.CHECK_CIRCLE if is_completed else ft.Icons.RADIO_BUTTON_UNCHECKED,
-                color=ft.Colors.GREEN if is_completed else colors["text_container_secondary"],
+                color=ft.Colors.GREEN if is_completed else colors["surface"],  # Cor do tema para elementos desativados
                 size=22  # ligeiramente menor para reduzir altura total
             )
 
@@ -1224,12 +1266,33 @@ class VPCRApp:
                 )
             )
 
+        # Criar controles finais com linhas conectando os ícones
+        final_status_controls = []
+        for i, icon_container in enumerate(status_icons):
+            final_status_controls.append(icon_container)
+            # Adicionar linha entre ícones (exceto após o último)
+            if i < len(status_icons) - 1:
+                # Verificar se ambos os ícones adjacentes estão verdes
+                current_completed = status_items[i][1]
+                next_completed = status_items[i + 1][1]
+                line_color = ft.Colors.GREEN if (current_completed and next_completed) else colors["surface"]
+                
+                # Linha conectando os ícones
+                connecting_line = ft.Container(
+                    content=ft.Divider(height=2, color=line_color),
+                    width=40,  # Largura maior da linha
+                    alignment=ft.alignment.center,
+                    height=22,  # Altura do ícone para alinhar com o centro
+                    padding=ft.padding.only(top=10)  # Padding para passar pelo centro do ícone
+                )
+                final_status_controls.append(connecting_line)
+
         # Container da linha de status agora sem expand para abraçar o conteúdo (altura mínima)
         status_line = ft.Container(
             content=ft.Row(
-                controls=status_icons,
-                spacing=8,
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                controls=final_status_controls,
+                spacing=0,  # Espaçamento zero pois as linhas têm largura própria
+                alignment=ft.MainAxisAlignment.START
             ),
             bgcolor=colors["secondary"],
             padding=6,  # Reduzido de 12 para 6
@@ -1303,9 +1366,9 @@ class VPCRApp:
         # Theme selector
         theme_selector = ft.RadioGroup(
             content=ft.Column([
-                ft.Radio(value="dark", label="Dark Theme"),
-                ft.Radio(value="dracula", label="Dracula Theme"),
-                ft.Radio(value="light_dracula", label="Light Dracula Theme")
+                ft.Radio(value="dark", label="Dark Theme", label_style=ft.TextStyle(color=colors["cor_font_settings"])),
+                ft.Radio(value="dracula", label="Dracula Theme", label_style=ft.TextStyle(color=colors["cor_font_settings"])),
+                ft.Radio(value="light_dracula", label="Light Dracula Theme", label_style=ft.TextStyle(color=colors["cor_font_settings"]))
             ]),
             value=self.theme_manager.current_theme,
             on_change=change_theme
@@ -1316,12 +1379,18 @@ class VPCRApp:
         for field in self.db_headers:
             if field == "ID":
                 continue
-            cb = ft.Checkbox(label=field, value=(field in self.visible_fields))
+            cb = ft.Checkbox(
+                label=field, 
+                value=(field in self.visible_fields),
+                label_style=ft.TextStyle(color=colors["cor_font_settings"])
+            )
             fields_checkboxes.append(cb)
 
         def apply_visible_fields(e):
             # Atualizar visible_fields com base nos checkboxes
             self.visible_fields = [cb.label for cb in fields_checkboxes if cb.value]
+            # Salvar configuração
+            self.save_visible_fields()
             self.update_card_list()
             # notificação
             sb = ft.SnackBar(content=ft.Text("Campos visíveis atualizados"))
@@ -1333,7 +1402,7 @@ class VPCRApp:
         # Containers separados com scroll: tema | campos
         theme_container = ft.Container(
             content=ft.Column([
-                ft.Text("Tema da Aplicação", size=18, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                ft.Text("Tema da Aplicação", size=18, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
                 ft.Divider(),
                 ft.Container(content=ft.Column([theme_selector], scroll=ft.ScrollMode.AUTO), expand=True)
             ], spacing=10),
