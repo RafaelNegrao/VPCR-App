@@ -4,6 +4,291 @@ import os
 import sqlite3
 from datetime import datetime
 import asyncio
+import threading
+from typing import List, Dict, Tuple
+
+try:
+    import openpyxl  # Para leitura de planilhas Excel (xlsx, xlsm)
+except ImportError:
+    openpyxl = None  # Lidaremos com ausência mostrando mensagem ao usuário
+
+class FileImportManager:
+    """Gerencia importação e validação de arquivos Excel para VPCR."""
+
+    # Header completo esperado conforme especificação do usuário
+    EXPECTED_HEADER_ORDER = [
+        "VPCR Project ID",
+        "Initiated Date",
+        "VPCR Title",
+        "Sourcing Manager",
+        "SQIE(s)",
+        "Supporting Documentation",
+        "Project Editor",
+        "Change Manager",
+        "Affected Items",
+        "Plants Affected - Post CPIF Integration",
+        "Desired Production Date at Affected Plant(s)",
+        "SCR Item ID",
+        "VPCR Status",
+        "Type of VPCR",
+        "Current Supplier",
+        "Proposed Supplier",
+        "Category 3 (Group)",
+        "Category 2 (Area)",
+        "VPCR Requestor",
+        "Last Updated Date"
+    ]
+
+    def __init__(self, app_ref: 'VPCRApp'):
+        self.app = app_ref
+        self.validated_files: List[Dict] = []  # {path, header_ok, errors, header}
+        self.file_picker = None  # Será criado quando a página existir
+        self.files_list_container: ft.Container | None = None
+        self.import_dialog = None
+        self.header_model_dialog = None
+
+    # ================= Public API =================
+    def build_file_picker(self):
+        """Cria (se ainda não criado) o FilePicker do Flet e registra callbacks."""
+        if self.file_picker is not None:
+            return self.file_picker
+
+        def on_result(e: ft.FilePickerResultEvent):
+            if not e.files:
+                return
+            paths = [f.path for f in e.files]
+            self.validate_files(paths)
+            self._update_files_listing()
+
+        self.file_picker = ft.FilePicker(on_result=on_result)
+        self.app.page.overlay.append(self.file_picker)
+        return self.file_picker
+
+    def open_file_dialog(self):
+        """Abre janela do sistema para seleção de arquivos Excel."""
+        if self.file_picker is None:
+            self.build_file_picker()
+        # Filtros de extensão (xlsx, xlsm, xlsb - xlsb não suportado por openpyxl mas permitimos seleção)
+        self.file_picker.pick_files(allow_multiple=True, allowed_extensions=['xlsx','xlsm','xlsb'])
+
+    def open_import_window(self):
+        """Abre janela principal de importação (parecida com a de TODO)."""
+        colors = self.app.theme_manager.get_theme_colors()
+
+        def close_window(e=None):
+            try:
+                self.app.page.close(self.import_dialog)
+            except Exception:
+                if self.app.page.dialog:
+                    self.app.page.dialog.open = False
+                    self.app.page.update()
+
+        def select_files(e):
+            self.open_file_dialog()
+
+        def open_header_model(e):
+            self.open_header_model_dialog()
+
+        # Área onde os arquivos aparecerão
+        self.files_list_container = ft.Container(
+            content=ft.Column([], spacing=10, scroll=ft.ScrollMode.AUTO),
+            height=240,
+            bgcolor=colors['secondary'],
+            padding=10,
+            border_radius=10
+        )
+
+        body = ft.Container(
+            bgcolor=colors['secondary'],
+            padding=15,
+            border_radius=12,
+            content=ft.Column([
+            ft.Text("Importar Arquivos VPCR", size=16, weight=ft.FontWeight.BOLD),
+            ft.Text("Selecione arquivos Excel (.xlsx/.xlsm). Cada arquivo será validado.", size=12, color=colors['text_container_secondary']),
+            ft.Row([
+                ft.ElevatedButton("Selecionar Arquivos", icon=ft.Icons.FILE_OPEN, on_click=select_files),
+                ft.TextButton("Ver modelo do header", on_click=open_header_model)
+            ], spacing=10),
+            ft.Divider(),
+            ft.Text("Arquivos selecionados:", size=12, weight=ft.FontWeight.BOLD),
+            self.files_list_container,
+            ft.Text(
+                "Regras: A1='VPCR Project ID' e coluna T='Last Updated Date'. Cabeçalho completo deve seguir o modelo.",
+                size=11,
+                color=ft.Colors.ORANGE_300
+            )
+        ], spacing=12, width=760, height=500)
+        )
+
+        self.import_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Importar VPCR", size=18, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']),
+            content=body,
+            bgcolor=colors['secondary'],
+            actions=[
+                ft.TextButton("Fechar", on_click=close_window)
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        self.app.page.open(self.import_dialog)
+        # Atualizar listagem se já existir conteúdo
+        self._update_files_listing()
+
+    def open_header_model_dialog(self):
+        """Exibe diálogo com duas colunas: Campo | Letra da Coluna."""
+        colors = self.app.theme_manager.get_theme_colors()
+
+        def idx_to_col_letter(idx: int) -> str:
+            # idx 1-based
+            letters = ""
+            while idx > 0:
+                idx, rem = divmod(idx - 1, 26)
+                letters = chr(65 + rem) + letters
+            return letters
+
+        # DataTable para visualização mais clara
+        rows = []
+        for i, field in enumerate(self.EXPECTED_HEADER_ORDER, start=1):
+            letter = idx_to_col_letter(i)
+            rows.append(ft.DataRow(cells=[
+                ft.DataCell(ft.Text(field, size=12, color=colors['text_container_primary'])),
+                ft.DataCell(ft.Text(letter, size=12, weight=ft.FontWeight.BOLD, color=colors['accent']))
+            ]))
+
+        data_table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Campo", size=12, weight=ft.FontWeight.BOLD, color=colors['text_container_primary'])),
+                ft.DataColumn(ft.Text("Coluna", size=12, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']))
+            ],
+            rows=rows,
+            heading_row_color=ft.Colors.with_opacity(0.2, colors['accent']),
+            data_row_color={"hovered": colors['surface']}
+        )
+
+        grid = ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=data_table,
+                    expand=True
+                )
+            ], expand=True, scroll=ft.ScrollMode.AUTO),
+            height=420,
+            bgcolor=colors['secondary'],
+            padding=10,
+            border_radius=10
+        )
+
+        def close_header(e=None):
+            try:
+                self.app.page.close(self.header_model_dialog)
+            except Exception:
+                if self.app.page.dialog:
+                    self.app.page.dialog.open = False
+                    self.app.page.update()
+
+        self.header_model_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Modelo de Header", size=18, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']),
+            content=grid,
+            bgcolor=colors['secondary'],
+            actions=[ft.TextButton("Fechar", on_click=close_header)],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        self.app.page.open(self.header_model_dialog)
+
+    # (Antigo show_import_review_dialog removido; listagem agora na janela principal)
+
+    # ================= Internal Helpers =================
+    def validate_files(self, paths: List[str]):
+        """Valida lista de arquivos de forma síncrona adicionando aos existentes.
+        Evita duplicar caminhos já validados anteriormente."""
+        existing_paths = {f['path'] for f in self.validated_files}
+        for path in paths:
+            if path not in existing_paths:
+                self.validated_files.append(self._validate_file(path))
+
+    def _validate_file(self, path: str) -> Dict:
+        header_ok = False
+        errors: List[str] = []
+        header_values: List[str] = []
+        # Ler arquivo
+        if openpyxl is None and path.lower().endswith(('.xlsx', '.xlsm')):
+            errors.append("Dependência 'openpyxl' não instalada")
+        else:
+            if path.lower().endswith('.xlsb'):
+                errors.append("Formato .xlsb não suportado (use .xlsx ou .xlsm)")
+            else:
+                try:
+                    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+                    ws = wb.active
+                    for idx in range(1, len(self.EXPECTED_HEADER_ORDER) + 1):
+                        cell_value = ws.cell(row=1, column=idx).value
+                        header_values.append(str(cell_value).strip() if cell_value is not None else "")
+                    wb.close()
+                except Exception as ex:
+                    errors.append(f"Erro leitura: {ex}")
+
+        if header_values:
+            if header_values[0] != 'VPCR Project ID':
+                errors.append("A1 != 'VPCR Project ID'")
+            if len(header_values) >= 20 and header_values[19] != 'Last Updated Date':
+                errors.append("Coluna T != 'Last Updated Date'")
+            if header_values[:len(self.EXPECTED_HEADER_ORDER)] != self.EXPECTED_HEADER_ORDER:
+                errors.append("Ordem diferente do modelo")
+            if not errors:
+                header_ok = True
+        return {
+            'path': path,
+            'header_ok': header_ok,
+            'errors': errors,
+            'header': header_values
+        }
+
+    def _update_files_listing(self):
+        if not self.files_list_container:
+            return
+        colors = self.app.theme_manager.get_theme_colors()
+        col: ft.Column = self.files_list_container.content  # type: ignore
+        col.controls.clear()
+        if not self.validated_files:
+            col.controls.append(ft.Text("Nenhum arquivo selecionado", size=12, color=colors['text_container_secondary']))
+        else:
+            for info in self.validated_files:
+                status_color = ft.Colors.GREEN if info['header_ok'] else ft.Colors.RED
+                errors_text = "; ".join(info['errors']) if info['errors'] else "OK"
+
+                def make_remove(path):
+                    return lambda e: self.remove_file(path)
+
+                card = ft.Card(
+                    color=colors['card_bg'] if 'card_bg' in colors else colors['surface'],
+                    elevation=2,
+                    content=ft.Container(
+                        padding=12,
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.CHECK_CIRCLE if info['header_ok'] else ft.Icons.ERROR, color=status_color, size=22),
+                                ft.Text(os.path.basename(info['path']), size=13, weight=ft.FontWeight.BOLD, color=colors['text_container_primary'], expand=True),
+                                ft.IconButton(icon=ft.Icons.DELETE, icon_color=ft.Colors.RED_400, tooltip="Remover arquivo", on_click=make_remove(info['path']))
+                            ], spacing=8),
+                            ft.Text(errors_text, size=11, color=colors['text_container_secondary'])
+                        ], spacing=6)
+                    )
+                )
+                col.controls.append(card)
+        self.files_list_container.update()
+
+    def remove_file(self, path: str):
+        self.validated_files = [f for f in self.validated_files if f['path'] != path]
+        self._update_files_listing()
+        # feedback
+        try:
+            self.app.page.snack_bar = ft.SnackBar(content=ft.Text(f"Arquivo removido: {os.path.basename(path)}"), duration=1500)
+            self.app.page.snack_bar.open = True
+            self.app.page.update()
+        except Exception:
+            pass
+
 
 class NotificationIconAnimator:
     """Classe para gerenciar animação dos ícones de notificação"""
@@ -188,24 +473,26 @@ class ThemeManager:
                 "selected_card": "#6272a4"       # Cor para card selecionado
             },
             "light_dracula": {
-                "primary": "#f8f8f2",
-                "secondary": "#e6e6fa",
-                "surface": "#939df9",
-                "on_surface": "#282a36",
-                "on_primary": "#282a36",
-                "accent": "#939df9",
-                "card_bg": "#ffffff",
-                "border": "#bd93f939",
-                "text_primary": "#282a36",        # Texto fora de containers
-                "text_secondary": "#6272a4",      # Texto secundário fora de containers
-                "text_container_primary": "#282a36",   # Texto principal dentro de containers
-                "text_container_secondary": "#44475a", # Texto secundário dentro de containers
-                "field_bg": "#ffffff",
-                "field_text": "#282a36",
-                "field_border": "#939df9",
-                "cor_font_settings": "#495057",   # Cor específica para textos em settings
-                "selected_card": "#e6e6fa"       # Cor para card selecionado
-            }
+                    # Light Dracula Azul: variante clara com base branco-azulada e acentos roxos
+                    # Mantém contraste adequado e suavidade em superfícies elevadas
+                    "primary": "#A3A3A3",             # Branco azulado (base da UI)
+                    "secondary": "#44475a",
+                    "surface": "#6272a4",            # Superfície elevada (cards e painéis)
+                    "on_surface": "#373a46",          # Texto sobre surface
+                    "on_primary": "#4c4d52",          # Texto sobre primary
+                    "accent": "#ac7eec",              # Roxo característico Dracula
+                    "card_bg": "#44475a",            # Fundo de cards, levemente mais escuro que primary
+                    "border": "#B7C3D6",              # Bordas azuladas discretas
+                    "text_primary": "#f8f8f2",           # Texto fora de containers
+                    "text_secondary": "#adb8bb",          # Texto secundário fora de containers
+                    "text_container_primary": "#DAD8D8",    # Texto principal dentro de containers
+                    "text_container_secondary": "#8be9fd", # Texto secundário dentro de containers
+                    "field_bg": "#4a4d60",               # Fundo do campo igual à cor da borda
+                    "field_text": "#8be9fd",          # Texto dos campos
+                    "field_border": "#4a4d60",        # Bordas discretas azuladas
+                    "cor_font_settings": "#bbbbbb",   # Texto em configurações
+                    "selected_card": "#6272a4"       # Destaque de seleção com leve tom azul-violeta
+                }
         }
         self.current_theme = "dark"
         self.font_size = 14  # Tamanho padrão da fonte
@@ -283,6 +570,8 @@ class VPCRApp:
         self.theme_manager = ThemeManager()
         self.db_manager = DatabaseManager()
         self.icon_animator = NotificationIconAnimator()
+        # Gerenciador de importação de arquivos
+        self.file_import_manager = FileImportManager(self)
         # Dicionário para rastrear ícones animados
         self.animated_icons = {}
         # Cabeçalho do 'banco de dados' — deve corresponder ao Controle VPCR.xlsb
@@ -1582,6 +1871,11 @@ class VPCRApp:
     def create_vpcr_tab(self):
         """Cria o conteúdo da aba VPCR"""
         colors = self.theme_manager.get_theme_colors()
+        # Garantir que FilePicker esteja pronto
+        try:
+            self.file_import_manager.build_file_picker()
+        except Exception:
+            pass
         
         # Lista de cards com filtros (ListView para melhor comportamento de scroll)
         self.card_list = ft.ListView(
@@ -1606,7 +1900,7 @@ class VPCRApp:
                     ft.IconButton(
                         icon=ft.Icons.FILE_UPLOAD,
                         tooltip="Importar",
-                        on_click=self.open_import_dialog if hasattr(self, 'open_import_dialog') else None
+                        on_click=lambda e: self.open_import_dialog()
                     ),
                     ft.IconButton(icon=ft.Icons.DELETE_SWEEP, tooltip="Limpar filtros", on_click=self.clear_all_filters)
                 ], spacing=6)
@@ -2108,6 +2402,19 @@ class VPCRApp:
             alignment=ft.alignment.top_left
         )
     
+    def open_import_dialog(self):
+        """Abre janela de importação utilizando FileImportManager."""
+        # Verificar dependência
+        if openpyxl is None:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Biblioteca openpyxl não instalada. Execute 'pip install openpyxl'."),
+                bgcolor=ft.Colors.RED_400
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        self.file_import_manager.open_import_window()
+        
+    
     def create_settings_tab(self):
         """Cria o conteúdo da aba Settings"""
         colors = self.theme_manager.get_theme_colors()
@@ -2236,7 +2543,7 @@ class VPCRApp:
             padding=12,
             border_radius=8,
             width=360,
-            height=300
+            height=400  # Igualado com o tema_container para manter consistência visual
         )
 
         # Layout responsivo: duas colunas quando couber, coluna única se pequeno
