@@ -435,7 +435,7 @@ class ThemeManager:
     def __init__(self):
         self.themes = {
             "dark": {
-                "primary": "#121212",
+                "primary": "#181818",
                 "secondary": "#1e1e1e",
                 "surface": "#2d2d2d",
                 "on_surface": "#ffffff",
@@ -451,7 +451,7 @@ class ThemeManager:
                 "field_text": "#ffffff",
                 "field_border": "#444444",
                 "cor_font_settings": "#ffffff",
-                "selected_card": "#4a4a4a"       # Cor para card selecionado
+                "selected_card": "#323550"       # Cor para card selecionado
             },
             "dracula": {
                 "primary": "#282a36",
@@ -1966,7 +1966,7 @@ class VPCRApp:
             expand=True,
             multiline=True,
             min_lines=10,
-            on_change=lambda e: self._update_detail_field("Title", e.control.value)
+            read_only=True
         )
         
         self.tf_initiated = ft.TextField(
@@ -1977,7 +1977,7 @@ class VPCRApp:
             border_color=colors["field_border"],
             height=40,
             expand=True,  # Garante que se adapte horizontalmente
-            on_change=lambda e: self._update_detail_field("Initiated Date", e.control.value)
+            read_only=True
         )
         
         self.tf_last_update = ft.TextField(
@@ -1988,7 +1988,7 @@ class VPCRApp:
             border_color=colors["field_border"],
             height=40,
             expand=True,  # Garante que se adapte horizontalmente
-            on_change=lambda e: self._update_detail_field("Last Update", e.control.value)
+            read_only=True
         )
         
         self.tf_closed_date = ft.TextField(
@@ -1999,7 +1999,7 @@ class VPCRApp:
             border_color=colors["field_border"],
             height=40,
             expand=True,  # Garante que se adapte horizontalmente
-            on_change=lambda e: self._update_detail_field("Closed Date", e.control.value)
+            read_only=True
         )
         
         self.tf_category = ft.TextField(
@@ -2010,7 +2010,7 @@ class VPCRApp:
             border_color=colors["field_border"],
             height=40,
             expand=True,  # Garante que se adapte horizontalmente
-            on_change=lambda e: self._update_detail_field("Category", e.control.value)
+            read_only=True
         )
         
         self.tf_supplier = ft.TextField(
@@ -2021,7 +2021,7 @@ class VPCRApp:
             border_color=colors["field_border"],
             height=40,
             expand=True,  # Garante que se adapte horizontalmente
-            on_change=lambda e: self._update_detail_field("Supplier", e.control.value)
+            read_only=True
         )
         
         self.tf_pns = ft.TextField(
@@ -2032,8 +2032,8 @@ class VPCRApp:
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
-            expand=True, 
-            on_change=lambda e: self._update_detail_field("PNs", e.control.value)
+            expand=True,
+            read_only=True
         )
         
         self.tf_plants = ft.TextField(
@@ -2044,8 +2044,8 @@ class VPCRApp:
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
-            expand=True, 
-            on_change=lambda e: self._update_detail_field("Plants Affected", e.control.value)
+            expand=True,
+            read_only=True
         )
         
         # Campo de Link com ícone para abrir página web
@@ -2124,8 +2124,8 @@ class VPCRApp:
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=40, 
-            on_change=lambda e: self._update_detail_field("Requestor", e.control.value)
+            height=40,
+            read_only=True
         )
         
         self.tf_sourcing = ft.TextField(
@@ -2135,8 +2135,8 @@ class VPCRApp:
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=40, 
-            on_change=lambda e: self._update_detail_field("Sourcing", e.control.value)
+            height=40,
+            read_only=True
         )
         
         self.tf_sqie = ft.TextField(
@@ -2146,8 +2146,8 @@ class VPCRApp:
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=40, 
-            on_change=lambda e: self._update_detail_field("SQIE", e.control.value)
+            height=40,
+            read_only=True
         )
         
         self.tf_continuity = ft.TextField(
