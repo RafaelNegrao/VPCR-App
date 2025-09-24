@@ -126,7 +126,8 @@ class FileImportManager:
             content=body,
             bgcolor=colors['secondary'],
             actions=[
-                ft.TextButton("Fechar", on_click=close_window)
+                ft.TextButton("Fechar", on_click=close_window),
+                ft.ElevatedButton("Importar", icon=ft.Icons.UPLOAD, on_click=lambda e: self.execute_import())
             ],
             actions_alignment=ft.MainAxisAlignment.END
         )
@@ -289,6 +290,115 @@ class FileImportManager:
         except Exception:
             pass
 
+    def execute_import(self):
+        """Executa a importação dos arquivos selecionados"""
+        if not self.validated_files:
+            self.app.show_custom_notification(
+                "Nenhum arquivo selecionado para importação.", 
+                color=ft.Colors.ORANGE_400
+            )
+            return
+        
+        try:
+            total_imported = 0
+            total_updated = 0
+            total_lines = 0
+            errors = []
+            
+            # Mostrar notificação de início
+            self.app.show_custom_notification(
+                f"Iniciando importação de {len(self.validated_files)} arquivo(s)...", 
+                color=ft.Colors.BLUE_400
+            )
+            
+            for file_info in self.validated_files:
+                file_path = file_info['path']
+                file_name = os.path.basename(file_path)
+                
+                try:
+                    # Contar linhas do arquivo antes da importação
+                    import pandas as pd
+                    df = pd.read_excel(file_path)
+                    lines_in_file = len(df)
+                    total_lines += lines_in_file
+                    
+                    print(f"Processando {file_name}: {lines_in_file} linhas encontradas")
+                    
+                    # Executar importação via DatabaseManager
+                    result = self.app.db_manager.import_from_excel(file_path)
+                    
+                    if result['success']:
+                        total_imported += result['imported']
+                        total_updated += result['updated']
+                        print(f"✓ {file_name}: {result['imported']} novos, {result['updated']} atualizados")
+                    else:
+                        errors.append(f"{file_name}: {result.get('error', 'Erro desconhecido')}")
+                        print(f"✗ {file_name}: {result.get('error', 'Erro desconhecido')}")
+                        
+                except Exception as e:
+                    error_msg = f"{file_name}: {str(e)}"
+                    errors.append(error_msg)
+                    print(f"✗ {error_msg}")
+            
+            # Mostrar resultado final
+            if total_imported > 0 or total_updated > 0:
+                success_message = (
+                    f"🎉 Importação concluída!\n"
+                    f"📊 Total de linhas processadas: {total_lines}\n"
+                    f"✅ Novos itens: {total_imported}\n"
+                    f"🔄 Itens atualizados: {total_updated}\n"
+                    f"📁 Arquivos processados: {len(self.validated_files)}"
+                )
+                
+                if errors:
+                    success_message += f"\n⚠️ Erros: {len(errors)}"
+                
+                # Atualizar dados na aplicação principal
+                self.app.refresh_data_from_db()
+                
+                # Usar notificação de sucesso ou warning se houver erros
+                color = ft.Colors.GREEN_400 if not errors else ft.Colors.ORANGE_400
+                self.app.show_custom_notification(success_message, color=color, duration=5000)
+                
+                # Fechar janela de importação após sucesso
+                if hasattr(self, 'import_dialog') and self.import_dialog:
+                    self.app.page.close(self.import_dialog)
+                    
+            else:
+                error_message = (
+                    f"❌ Nenhum item foi importado!\n"
+                    f"📊 Linhas processadas: {total_lines}\n"
+                    f"📁 Arquivos analisados: {len(self.validated_files)}"
+                )
+                
+                if errors:
+                    error_message += f"\n🚨 Erros encontrados: {len(errors)}"
+                    for i, error in enumerate(errors[:3], 1):  # Mostrar apenas os primeiros 3 erros
+                        error_message += f"\n{i}. {error}"
+                    
+                    if len(errors) > 3:
+                        error_message += f"\n... e mais {len(errors) - 3} erro(s)"
+                
+                self.app.show_custom_notification(error_message, color=ft.Colors.RED_400, duration=6000)
+                
+            # Log detalhado no console
+            print(f"\n=== RESUMO DA IMPORTAÇÃO ===")
+            print(f"Total de linhas: {total_lines}")
+            print(f"Novos itens: {total_imported}")
+            print(f"Itens atualizados: {total_updated}")
+            print(f"Arquivos processados: {len(self.validated_files)}")
+            print(f"Erros encontrados: {len(errors)}")
+            if errors:
+                print("\nDetalhes dos erros:")
+                for i, error in enumerate(errors, 1):
+                    print(f"{i}. {error}")
+            print("=" * 30)
+                
+        except Exception as e:
+            error_msg = f"💥 Erro crítico durante a importação: {str(e)}"
+            print(f"ERRO CRÍTICO: {e}")
+            self.app.show_custom_notification(error_msg, color=ft.Colors.RED_400, duration=6000)
+
 
 class NotificationIconAnimator:
     """Classe para gerenciar animação dos ícones de notificação"""
@@ -348,10 +458,14 @@ class DatabaseManager:
     def __init__(self, db_path='vpcr_database.db'):
         self.db_path = db_path
         self.create_todos_table()
+        self.create_log_table()
     
     def get_connection(self):
-        """Cria uma nova conexão com o banco de dados"""
-        return sqlite3.connect(self.db_path)
+        """Cria uma nova conexão com o banco de dados com timeout"""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.execute('PRAGMA busy_timeout = 30000')  # 30 segundos de timeout
+        conn.execute('PRAGMA journal_mode = WAL')    # Write-Ahead Logging para melhor concorrência
+        return conn
     
     def create_todos_table(self):
         """Cria a tabela de todos no banco de dados se não existir"""
@@ -367,6 +481,25 @@ class DatabaseManager:
                 )
             ''')
             conn.commit()
+    
+    def create_log_table(self):
+        """Cria a tabela de log para rastrear alterações"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS log_table (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id TEXT NOT NULL,
+                    field_name TEXT NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    change_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    change_type TEXT DEFAULT 'update'
+                )
+            ''')
+            conn.commit()
+    
+
     
     def get_todos_for_item(self, item_id):
         """Busca todos os TODOs para um item específico"""
@@ -428,6 +561,422 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM todos WHERE item_id = ? AND completed = 0', (item_id,))
             return cursor.fetchone()[0] > 0
+    
+    def convert_date_format(self, date_str):
+        """Converte data de m/d/yyyy para dd/mm/yyyy"""
+        try:
+            import pandas as pd
+        except ImportError:
+            pd = None
+            
+        if not date_str or (pd and pd.isna(date_str)):
+            return ""
+        
+        try:
+            if isinstance(date_str, str):
+                # Se já está no formato dd/mm/yyyy, retorna como está
+                if '/' in date_str and len(date_str.split('/')) == 3:
+                    parts = date_str.split('/')
+                    if len(parts[0]) <= 2 and len(parts[1]) <= 2 and len(parts[2]) == 4:
+                        # Pode estar em m/d/yyyy
+                        if int(parts[0]) > 12:  # Dia > 12, então está em d/m/yyyy
+                            return date_str
+                        else:
+                            # Assumir m/d/yyyy e converter para dd/mm/yyyy
+                            month, day, year = parts
+                            return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+                return date_str
+            else:
+                # Se for datetime do pandas
+                return date_str.strftime('%d/%m/%Y')
+        except Exception as e:
+            print(f"Erro ao converter data '{date_str}': {e}")
+            return str(date_str) if date_str else ""
+    
+    def log_change(self, item_id, field_name, old_value, new_value, change_type='update', conn=None):
+        """Registra uma alteração no log"""
+        # Só registra se houver mudança real
+        if str(old_value) == str(new_value):
+            return
+        
+        # Usar conexão fornecida ou criar nova
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (item_id, field_name, str(old_value) if old_value else '', 
+                  str(new_value) if new_value else '', change_type))
+        else:
+            connection = None
+            try:
+                connection = self.get_connection()
+                cursor = connection.cursor()
+                cursor.execute('''
+                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (item_id, field_name, str(old_value) if old_value else '', 
+                      str(new_value) if new_value else '', change_type))
+                connection.commit()
+            except Exception as e:
+                if connection:
+                    connection.rollback()
+                raise e
+            finally:
+                if connection:
+                    connection.close()
+    
+    def get_item_from_db(self, item_id):
+        """Busca um item específico do banco de dados"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM vpcr WHERE vpcr = ?', (item_id,))
+            columns = [description[0] for description in cursor.description]
+            row = cursor.fetchone()
+            if row:
+                return dict(zip(columns, row))
+            return None
+    
+    def upsert_item(self, item_data):
+        """Insere ou atualiza um item no banco de dados"""
+        item_id = item_data.get('ID')
+        if not item_id:
+            return
+            
+        # Mapear campos do formato da aplicação para o formato do banco de dados
+        db_field_mapping = {
+            'ID': 'vpcr',
+            'Title': 'vpcr_title',
+            'Initiated Date': 'initiated_date',
+            'Last Update': 'last_update',
+            'Closed Date': 'closed_date',
+            'Category': 'category_3_group',
+            'Supplier': 'current_supplier',
+            'PNs': 'items_affected',
+            'Plants Affected': 'plants_affected',
+            'Requestor': 'vpcr_requestor',
+            'Sourcing Manager': 'sourcing_manager',
+            'SQIE': 'sqie_s',
+            'Continuity': 'continuity',
+            'Status': 'vpcr_status',
+            'RFQ': 'rfq',
+            'DRA': 'dra',
+            'DQR': 'dqr',
+            'LOI': 'loi',
+            'Tooling': 'tooling',
+            'Drawing': 'drawing',
+            'PO Alfa': 'po_alfa',
+            'SR': 'sr_roc',
+            'Deviation': 'deviation',
+            'PO Beta': 'po_beta',
+            'PPAP': 'ppap',
+            'GBPA': 'gbpa',
+            'EDI': 'edi',
+            'SCR': 'scr_item_id',
+            'Comments': 'comments',
+            'Log': 'log',
+            'Link': 'link_vpcr',
+            'Type of VPCR': 'type_of_vpcr',
+            'Proposed Supplier': 'proposed_supplier',
+            'Category 2 (Area)': 'category_2_area',
+            'Supporting Documentation': 'supporting_documentation',
+            'Project Editor': 'project_editor',
+            'Change Manager': 'change_manager',
+            'Affected Items': 'items_affected',
+            'Desired Production Date at Affected Plant(s)': 'desired_production_date',
+            'SCR Item ID': 'scr_item_id'
+        }
+            
+        # Usar uma única conexão para toda a operação
+        conn = None
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Iniciar transação explícita
+            cursor.execute('BEGIN IMMEDIATE')
+            
+            # Verificar se o item já existe
+            cursor.execute('SELECT * FROM vpcr WHERE vpcr = ?', (item_id,))
+            columns = [description[0] for description in cursor.description]
+            row = cursor.fetchone()
+            existing_item = dict(zip(columns, row)) if row else None
+            
+            # Converter dados para formato do banco
+            db_data = {}
+            for app_field, value in item_data.items():
+                db_field = db_field_mapping.get(app_field, app_field.lower().replace(' ', '_'))
+                db_data[db_field] = value
+            
+            if existing_item:
+                # Atualizar item existente e registrar mudanças
+                update_pairs = []
+                update_values = []
+                
+                for db_field, new_value in db_data.items():
+                    old_value = existing_item.get(db_field, '')
+                    if str(old_value) != str(new_value):
+                        update_pairs.append(f'{db_field} = ?')
+                        update_values.append(new_value)
+                        # Registrar mudança no log na mesma transação
+                        cursor.execute('''
+                            INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (item_id, db_field, str(old_value) if old_value else '', 
+                              str(new_value) if new_value else '', 'import_update'))
+                
+                if update_pairs:
+                    update_sql = f'UPDATE vpcr SET {", ".join(update_pairs)} WHERE vpcr = ?'
+                    update_values.append(item_id)
+                    cursor.execute(update_sql, update_values)
+            else:
+                # Inserir novo item
+                fields = list(db_data.keys())
+                placeholders = ', '.join(['?' for _ in fields])
+                field_names = ', '.join(fields)
+                values = list(db_data.values())
+                
+                insert_sql = f'INSERT OR REPLACE INTO vpcr ({field_names}) VALUES ({placeholders})'
+                cursor.execute(insert_sql, values)
+                # Registrar criação no log na mesma transação
+                cursor.execute('''
+                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (item_id, 'ITEM_CREATED', '', 'Item criado via importação', 'import_create'))
+            
+            # Commit da transação
+            conn.commit()
+            
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise e
+        finally:
+            if conn:
+                conn.close()
+    
+    def import_from_excel(self, file_path):
+        """Importa dados do Excel comparando com dados existentes"""
+        try:
+            import pandas as pd
+            import time
+            
+            # Ler o arquivo Excel
+            df = pd.read_excel(file_path)
+            
+            # Mapear colunas do Excel para campos do banco
+            column_mapping = {
+                'VPCR Project ID': 'vpcr',  # Campo VPCR correto
+                'VPCR Title': 'Title',
+                'Initiated Date': 'Initiated Date',
+                'Last Updated Date': 'Last Update',
+                'Closed Date': 'Closed Date',
+                'Category 3 (Group)': 'Category',
+                'Current Supplier': 'Supplier',
+                'Affected Items': 'PNs',
+                'Plants Affected - Post CPIF Integration': 'Plants Affected',
+                'VPCR Requestor': 'Requestor',
+                'Sourcing Manager': 'Sourcing Manager',
+                'SQIE(s)': 'SQIE',
+                'VPCR Status': 'Status',
+                'Type of VPCR': 'Type of VPCR',
+                'Proposed Supplier': 'Proposed Supplier',
+                'Category 2 (Area)': 'Category 2 (Area)',
+                'Supporting Documentation': 'Supporting Documentation',
+                'Project Editor': 'Project Editor',
+                'Change Manager': 'Change Manager',
+                'Desired Production Date at Affected Plant(s)': 'Desired Production Date at Affected Plant(s)',
+                'SCR Item ID': 'SCR Item ID'
+            }
+            
+            imported_count = 0
+            updated_count = 0
+            batch_size = 10  # Processar em lotes menores
+            
+            # Processar em lotes para evitar locks prolongados
+            for batch_start in range(0, len(df), batch_size):
+                batch_end = min(batch_start + batch_size, len(df))
+                batch_df = df.iloc[batch_start:batch_end]
+                
+                for index, row in batch_df.iterrows():
+                    try:
+                        # Preparar dados do item
+                        item_data = {}
+                        
+                        for excel_col, db_field in column_mapping.items():
+                            if excel_col in row:
+                                value = row[excel_col]
+                                
+                                # Converter datas
+                                if 'Date' in excel_col:
+                                    value = self.convert_date_format(value)
+                                
+                                # Tratar valores NaN
+                                if pd.isna(value):
+                                    value = ""
+                                else:
+                                    value = str(value).strip()
+                                
+                                # Processar campos que devem ser listas (separados por ;)
+                                if db_field in ['PNs', 'Plants Affected'] and value:
+                                    # Quebrar por ";" e limpar espaços
+                                    value_list = [item.strip() for item in value.split(';') if item.strip()]
+                                    # Manter como string para compatibilidade, mas formatada como lista
+                                    value = '; '.join(value_list)
+                                
+                                item_data[db_field] = value
+                        
+                        # Verificar se tem ID válido
+                        if not item_data.get('ID'):
+                            print(f"Linha {index + 1}: ID não encontrado, pulando...")
+                            continue
+                        
+                        # Verificar se item já existe (usando método separado para evitar conflitos)
+                        existing = None
+                        retry_count = 3
+                        for attempt in range(retry_count):
+                            try:
+                                existing = self.get_item_from_db(item_data['ID'])
+                                break
+                            except Exception as e:
+                                if 'locked' in str(e).lower() and attempt < retry_count - 1:
+                                    time.sleep(0.1 * (attempt + 1))  # Espera exponencial
+                                    continue
+                                else:
+                                    raise e
+                        
+                        # Fazer upsert com retry
+                        for attempt in range(retry_count):
+                            try:
+                                self.upsert_item(item_data)
+                                break
+                            except Exception as e:
+                                if 'locked' in str(e).lower() and attempt < retry_count - 1:
+                                    time.sleep(0.1 * (attempt + 1))  # Espera exponencial
+                                    continue
+                                else:
+                                    raise e
+                        
+                        if existing:
+                            updated_count += 1
+                        else:
+                            imported_count += 1
+                            
+                    except Exception as e:
+                        print(f"Erro ao processar linha {index + 1}: {e}")
+                        continue
+                
+                # Pequena pausa entre lotes para permitir outras operações
+                time.sleep(0.01)
+            
+            return {
+                'success': True,
+                'imported': imported_count,
+                'updated': updated_count,
+                'total_processed': imported_count + updated_count
+            }
+            
+        except Exception as e:
+            print(f"Erro na importação: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'imported': 0,
+                'updated': 0,
+                'total_processed': 0
+            }
+    
+    def get_all_items(self):
+        """Retorna todos os itens do banco de dados"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM vpcr')
+            columns = [description[0] for description in cursor.description]
+            rows = cursor.fetchall()
+            
+            # Converter para o formato esperado pela aplicação
+            formatted_items = []
+            for row in rows:
+                item_dict = dict(zip(columns, row))
+                # Mapear campos do banco para o formato esperado
+                formatted_item = {
+                    'ID': item_dict.get('vpcr', ''),
+                    'vpcr': item_dict.get('vpcr', ''),  # Campo VPCR para o título do card
+                    'Title': item_dict.get('vpcr_title', ''),
+                    'Initiated Date': item_dict.get('initiated_date', ''),
+                    'Last Update': item_dict.get('last_update', ''),
+                    'Closed Date': item_dict.get('closed_date', ''),
+                    'Category': item_dict.get('category_3_group', ''),
+                    'Supplier': item_dict.get('current_supplier', ''),
+                    'PNs': item_dict.get('items_affected', ''),
+                    'Plants Affected': item_dict.get('plants_affected', ''),
+                    'Requestor': item_dict.get('vpcr_requestor', ''),
+                    'Sourcing Manager': item_dict.get('sourcing_manager', ''),
+                    'SQIE': item_dict.get('sqie_s', ''),
+                    'Continuity': item_dict.get('continuity', ''),
+                    'Status': item_dict.get('vpcr_status', ''),
+                    'RFQ': item_dict.get('rfq', ''),
+                    'DRA': item_dict.get('dra', ''),
+                    'DQR': item_dict.get('dqr', ''),
+                    'LOI': item_dict.get('loi', ''),
+                    'Tooling': item_dict.get('tooling', ''),
+                    'Drawing': item_dict.get('drawing', ''),
+                    'PO Alfa': item_dict.get('po_alfa', ''),
+                    'SR': item_dict.get('sr_roc', ''),
+                    'Deviation': item_dict.get('deviation', ''),
+                    'PO Beta': item_dict.get('po_beta', ''),
+                    'PPAP': item_dict.get('ppap', ''),
+                    'GBPA': item_dict.get('gbpa', ''),
+                    'EDI': item_dict.get('edi', ''),
+                    'SCR': item_dict.get('scr_item_id', ''),
+                    'Comments': item_dict.get('comments', ''),
+                    'Log': item_dict.get('log', ''),
+                    'Link': item_dict.get('link_vpcr', ''),
+                    'Type of VPCR': item_dict.get('type_of_vpcr', ''),
+                    'Current Supplier': item_dict.get('current_supplier', ''),
+                    'Proposed Supplier': item_dict.get('proposed_supplier', ''),
+                    'Category 3 (Group)': item_dict.get('category_3_group', ''),
+                    'Category 2 (Area)': item_dict.get('category_2_area', ''),
+                    'Supporting Documentation': item_dict.get('supporting_documentation', ''),
+                    'Project Editor': item_dict.get('project_editor', ''),
+                    'Change Manager': item_dict.get('change_manager', ''),
+                    'Affected Items': item_dict.get('items_affected', ''),
+                    'Desired Production Date at Affected Plant(s)': item_dict.get('desired_production_date', ''),
+                    'SCR Item ID': item_dict.get('scr_item_id', '')
+                }
+                
+                # Processar campos que devem ser listas (quebrados por ;)
+                for field in ['PNs', 'Plants Affected']:
+                    if formatted_item[field]:
+                        # Quebrar por ";" e criar lista limpa
+                        items_list = [item.strip() for item in formatted_item[field].split(';') if item.strip()]
+                        # Manter como string formatada para compatibilidade
+                        formatted_item[field] = '; '.join(items_list) if items_list else ''
+                formatted_items.append(formatted_item)
+            
+            return formatted_items
+    
+    def get_change_log(self, item_id=None, limit=100):
+        """Retorna o log de alterações"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if item_id:
+                cursor.execute('''
+                    SELECT * FROM log_table 
+                    WHERE item_id = ? 
+                    ORDER BY change_date DESC 
+                    LIMIT ?
+                ''', (item_id, limit))
+            else:
+                cursor.execute('''
+                    SELECT * FROM log_table 
+                    ORDER BY change_date DESC 
+                    LIMIT ?
+                ''', (limit,))
+            
+            columns = [description[0] for description in cursor.description]
+            rows = cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
 
 class ThemeManager:
     """Gerenciador de temas da aplicação"""
@@ -586,14 +1135,8 @@ class VPCRApp:
             "Continuity",
         ]
 
-        # Dados de exemplo (cada item corresponde ao header acima)
-        self.sample_data = [
-            {"ID": 1, "Title": "Item 1", "Description": "Descrição do item 1", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High"},
-            {"ID": 2, "Title": "Item 2", "Description": "Descrição do item 2", "Status": "Inativo", "Sourcing Manager": "Bob", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low"},
-            {"ID": 3, "Title": "Item 3", "Description": "Descrição do item 3", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier C", "Requestor": "Peter", "Continuity": "Medium"},
-            {"ID": 4, "Title": "Item 4", "Description": "Descrição do item 4", "Status": "Pendente", "Sourcing Manager": "Carlos", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High"},
-            {"ID": 5, "Title": "Item 5", "Description": "Outro item", "Status": "Ativo", "Sourcing Manager": "Diana", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low"},
-        ]
+        # Carregar dados do banco de dados ao inicializar
+        self.sample_data = self.load_data_from_db()
         self.filtered_data = self.sample_data.copy()
         # Campos visíveis nos cards (configurável nas Settings)
         self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
@@ -795,6 +1338,78 @@ class VPCRApp:
         # Atualizar a página para aplicar as mudanças
         if hasattr(self, 'page') and self.page:
             self.page.update()
+    
+    def load_data_from_db(self):
+        """Carrega dados do banco de dados na inicialização"""
+        try:
+            # Buscar itens do banco de dados
+            db_items = self.db_manager.get_all_items()
+            
+            if db_items:
+                print(f"Dados carregados na inicialização: {len(db_items)} itens do banco de dados")
+                return db_items
+            else:
+                print("Nenhum item encontrado no banco de dados, usando dados de exemplo")
+                # Retornar dados de exemplo se não houver dados no banco
+                return [
+                    {"ID": 1, "Title": "Item 1", "Description": "Descrição do item 1", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High", "vpcr": "VPCR00001"},
+                    {"ID": 2, "Title": "Item 2", "Description": "Descrição do item 2", "Status": "Inativo", "Sourcing Manager": "Bob", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low", "vpcr": "VPCR00002"},
+                    {"ID": 3, "Title": "Item 3", "Description": "Descrição do item 3", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier C", "Requestor": "Peter", "Continuity": "Medium", "vpcr": "VPCR00003"},
+                    {"ID": 4, "Title": "Item 4", "Description": "Descrição do item 4", "Status": "Pendente", "Sourcing Manager": "Carlos", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High", "vpcr": "VPCR00004"},
+                    {"ID": 5, "Title": "Item 5", "Description": "Outro item", "Status": "Ativo", "Sourcing Manager": "Diana", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low", "vpcr": "VPCR00005"},
+                ]
+                
+        except Exception as e:
+            print(f"Erro ao carregar dados do banco na inicialização: {e}")
+            # Retornar dados de exemplo em caso de erro
+            return [
+                {"ID": 1, "Title": "Item 1", "Description": "Descrição do item 1", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High", "vpcr": "VPCR00001"},
+                {"ID": 2, "Title": "Item 2", "Description": "Descrição do item 2", "Status": "Inativo", "Sourcing Manager": "Bob", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low", "vpcr": "VPCR00002"},
+            ]
+
+    def refresh_data_from_db(self):
+        """Recarrega os dados do banco de dados para a aplicação"""
+        try:
+            # Buscar itens do banco de dados
+            db_items = self.db_manager.get_all_items()
+            
+            if db_items:
+                # Atualizar sample_data com dados do banco
+                self.sample_data = db_items
+                # Atualizar dados filtrados
+                self.filter_data()
+                # Atualizar lista de cards
+                self.update_card_list()
+                # Atualizar opções de filtros
+                self.populate_filter_options()
+                print(f"Dados recarregados: {len(db_items)} itens do banco de dados")
+            else:
+                print("Nenhum item encontrado no banco de dados")
+                
+        except Exception as e:
+            print(f"Erro ao recarregar dados do banco: {e}")
+    
+    def refresh_data_from_db(self):
+        """Recarrega os dados do banco de dados após importação"""
+        try:
+            # Buscar todos os itens do banco de dados
+            db_items = self.db_manager.get_all_items()
+            
+            if db_items:
+                # Atualizar sample_data com dados do banco
+                self.sample_data = db_items
+                # Atualizar dados filtrados
+                self.filter_data()
+                # Atualizar lista de cards
+                self.update_card_list()
+                # Atualizar opções de filtros
+                self.populate_filter_options()
+                print(f"Dados atualizados: {len(db_items)} itens do banco de dados")
+            else:
+                print("Nenhum item encontrado no banco de dados")
+                
+        except Exception as e:
+            print(f"Erro ao atualizar dados do banco: {e}")
         
     def main(self, page: ft.Page):
         self.page = page
@@ -993,15 +1608,18 @@ class VPCRApp:
         
         # --- filtros com multiseleção usando Chips ---
         # containers para chips de multiseleção
-        # Larguras fixas para cada filtro (usadas para posicionar o dropdown customizado)
+        # Larguras uniformes para todos os filtros
+        uniform_width = 160
         self.filter_widths = {
-            "Sourcing Manager": 180,
-            "Status": 120,
-            "Supplier": 150,
-            "Requestor": 150,
-            "Continuity": 120,
+            "VPCR": uniform_width,
+            "Sourcing Manager": uniform_width,
+            "Status": uniform_width,
+            "Supplier": uniform_width,
+            "Requestor": uniform_width,
+            "Continuity": uniform_width,
         }
         self.filter_order = [
+            "VPCR",
             "Sourcing Manager",
             "Status",
             "Supplier",
@@ -1011,13 +1629,23 @@ class VPCRApp:
         # Define uma altura padronizada para todos os filtros
         filter_height = 38  # Altura fixa para todos os filtros
         
+        self.filter_vpcr_chips = ft.Container(
+            content=ft.Text("VPCR: Carregando...", size=12, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
+            bgcolor=colors["field_bg"],
+            border=ft.border.all(1, colors["field_border"]),
+            border_radius=8,
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            width=uniform_width,
+            height=filter_height
+        )
+        
         self.filter_sourcing_manager_chips = ft.Container(
             content=ft.Text("Sourcing Manager: Carregando...", size=12, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
             bgcolor=colors["field_bg"],
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=180,
+            width=uniform_width,
             height=filter_height
         )
         
@@ -1027,7 +1655,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=120,
+            width=uniform_width,
             height=filter_height
         )
         
@@ -1037,7 +1665,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=150,
+            width=uniform_width,
             height=filter_height
         )
         
@@ -1047,7 +1675,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=150,
+            width=uniform_width,
             height=filter_height
         )
         
@@ -1057,12 +1685,13 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=120,
+            width=uniform_width,
             height=filter_height
         )
         
         # armazenamento das seleções
         self.filter_selections = {
+            "VPCR": set(),
             "Sourcing Manager": set(),
             "Status": set(),
             "Supplier": set(),
@@ -1099,6 +1728,7 @@ class VPCRApp:
     def filter_data(self, e=None):
         """Filtra os dados baseado nos filtros ativos"""
         # filtros de multiseleção (conjuntos de valores)
+        vpcr_sel = self.filter_selections.get("VPCR", set())
         sm_sel = self.filter_selections.get("Sourcing Manager", set())
         status_multi_sel = self.filter_selections.get("Status", set())
         supplier_sel = self.filter_selections.get("Supplier", set())
@@ -1115,6 +1745,7 @@ class VPCRApp:
                     return True
                 return value in selected_set
 
+            vpcr_match = matches_multi(vpcr_sel, item.get("vpcr", ""))
             sm_match = matches_multi(sm_sel, item.get("Sourcing Manager", ""))
             status_multi_match = matches_multi(status_multi_sel, item.get("Status", ""))
             supplier_match = matches_multi(supplier_sel, item.get("Supplier", ""))
@@ -1128,7 +1759,7 @@ class VPCRApp:
                 has_incomplete_todos = self.db_manager.has_incomplete_todos(item_id)
                 todos_match = has_incomplete_todos
             
-            if sm_match and status_multi_match and supplier_match and requestor_match and continuity_match and todos_match:
+            if vpcr_match and sm_match and status_multi_match and supplier_match and requestor_match and continuity_match and todos_match:
                 self.filtered_data.append(item)
         
         # Mostrar notificação do resultado do filtro
@@ -1170,10 +1801,10 @@ class VPCRApp:
         # construir conteúdo do card dinamicamente conforme visible_fields
         rows = []
 
-        # primeira linha: mostrar Title e, se presente, o badge de Status
-        title_text = item.get("Title", "")
+        # primeira linha: mostrar VPCR e, se presente, o badge de Status
+        vpcr_text = item.get("vpcr", item.get("VPCR", ""))
         first_row_controls = [
-            ft.Text(title_text, size=base_font + 2, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"], expand=True)
+            ft.Text(vpcr_text, size=base_font + 2, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"], expand=True)
         ]
         if "Status" in self.visible_fields:
             first_row_controls.append(
@@ -1189,6 +1820,7 @@ class VPCRApp:
 
         # Adicionar linha "Title:" abaixo do título se Title estiver nos campos visíveis
         if "Title" in self.visible_fields:
+            title_text = item.get("Title", "")
             rows.append(ft.Row([ft.Text("Title:", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(title_text, size=base_font, color=colors["text_container_secondary"])], spacing=8))
 
         # outras fields (excluir Title já mostrado)
@@ -1197,7 +1829,17 @@ class VPCRApp:
                 continue
             val = item.get(f, "")
             if val != "":
-                rows.append(ft.Row([ft.Text(f + ":", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(str(val), size=base_font, color=colors["text_container_secondary"])], spacing=8))
+                # Para campos que contém listas separadas por ;, formatá-las como lista
+                if f in ["PNs", "Plants Affected", "Affected Items"] and ";" in str(val):
+                    items_list = [item.strip() for item in str(val).split(";") if item.strip()]
+                    if items_list:
+                        formatted_val = "• " + "\n• ".join(items_list)
+                    else:
+                        formatted_val = str(val)
+                else:
+                    formatted_val = str(val)
+                    
+                rows.append(ft.Row([ft.Text(f + ":", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(formatted_val, size=base_font, color=colors["text_container_secondary"])], spacing=8))
 
         # Adicionar linha com o ícone de notificação (antes de instanciar container principal)
         def handle_notification_click(e, current_item=item):
@@ -2266,7 +2908,8 @@ class VPCRApp:
 
     def populate_filter_options(self):
         """Popula as opções dos filtros com chips de multiseleção"""
-        # coletar valores únicos
+        # coletar valores únicos de todos os dados
+        vpcr_vals = sorted({item.get("vpcr", "") for item in self.sample_data if item.get("vpcr", "")})
         sourcing_vals = sorted({item.get("Sourcing Manager", "") for item in self.sample_data if item.get("Sourcing Manager", "")})
         status_vals = sorted({item.get("Status", "") for item in self.sample_data if item.get("Status", "")})
         supplier_vals = sorted({item.get("Supplier", "") for item in self.sample_data if item.get("Supplier", "")})
@@ -2277,6 +2920,7 @@ class VPCRApp:
 
         # armazenar valores para uso posterior
         self.filter_options = {
+            "VPCR": vpcr_vals,
             "Sourcing Manager": sourcing_vals,
             "Status": status_vals,
             "Supplier": supplier_vals,
@@ -2284,17 +2928,20 @@ class VPCRApp:
             "Continuity": continuity_vals
         }
 
+        colors = self.theme_manager.get_theme_colors()
+
         def create_clickable_filter(field_name, container):
             def show_dropdown(e):
                 self.show_dropdown_panel(field_name)
 
             container.content = ft.Row([
-                ft.Text(f"{field_name}: Todos", size=12, color=colors["field_text"], expand=True),
+                ft.Text(field_name, size=12, color=colors["field_text"], expand=True),
                 ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=16, color=colors["field_text"])
             ])
             container.on_click = show_dropdown
 
         # criar containers clicáveis para cada filtro
+        create_clickable_filter("VPCR", self.filter_vpcr_chips)
         create_clickable_filter("Sourcing Manager", self.filter_sourcing_manager_chips)
         create_clickable_filter("Status", self.filter_status_chips)
         create_clickable_filter("Supplier", self.filter_supplier_chips)
@@ -2303,6 +2950,7 @@ class VPCRApp:
         
         # atualizar controles se já estiverem na página
         try:
+            self.filter_vpcr_chips.update()
             self.filter_sourcing_manager_chips.update()
             self.filter_status_chips.update()
             self.filter_supplier_chips.update()
@@ -2310,11 +2958,54 @@ class VPCRApp:
             self.filter_continuity_chips.update()
         except:
             pass
+    
+    def get_available_filter_options(self, exclude_field=None):
+        """Calcula opções de filtro disponíveis baseadas nos filtros já aplicados"""
+        # Aplicar todos os filtros EXCETO o campo especificado
+        filtered_data = []
+        for item in self.sample_data:
+            include_item = True
+            
+            # Aplicar cada filtro se não for o campo excluído
+            for field_name in ["VPCR", "Sourcing Manager", "Status", "Supplier", "Requestor", "Continuity"]:
+                if field_name == exclude_field:
+                    continue
+                    
+                selected_values = self.filter_selections.get(field_name, set())
+                if selected_values:  # Se há valores selecionados, verificar se o item corresponde
+                    item_value = item.get(field_name if field_name != "VPCR" else "vpcr", "")
+                    if item_value not in selected_values:
+                        include_item = False
+                        break
+            
+            # Aplicar filtro de TODOs se ativo
+            if include_item and self.show_only_active_todos:
+                item_id = item.get("ID")
+                has_incomplete_todos = self.db_manager.has_incomplete_todos(item_id)
+                if not has_incomplete_todos:
+                    include_item = False
+            
+            if include_item:
+                filtered_data.append(item)
+        
+        # Calcular valores únicos disponíveis nos dados filtrados
+        available_options = {
+            "VPCR": sorted({item.get("vpcr", "") for item in filtered_data if item.get("vpcr", "")}),
+            "Sourcing Manager": sorted({item.get("Sourcing Manager", "") for item in filtered_data if item.get("Sourcing Manager", "")}),
+            "Status": sorted({item.get("Status", "") for item in filtered_data if item.get("Status", "")}),
+            "Supplier": sorted({item.get("Supplier", "") for item in filtered_data if item.get("Supplier", "")}),
+            "Requestor": sorted({item.get("Requestor", "") for item in filtered_data if item.get("Requestor", "")}),
+            "Continuity": sorted({item.get("Continuity", "") for item in filtered_data if item.get("Continuity", "")})
+        }
+        
+        return available_options
 
     def show_dropdown_panel(self, field_name: str):
         """Mostra um painel dropdown customizado abaixo do filtro clicado (com busca e checkboxes)."""
         colors = self.theme_manager.get_theme_colors()
-        values = self.filter_options.get(field_name, [])
+        # Usar opções disponíveis baseadas nos filtros já aplicados
+        available_options = self.get_available_filter_options(exclude_field=field_name)
+        values = available_options.get(field_name, [])
 
         # Criar checkboxes com estado atual
         checkboxes = []
@@ -2361,12 +3052,13 @@ class VPCRApp:
         def cancel_and_close(e):
             self.hide_dropdown_panel()
 
-        # Construir painel
+        # Construir painel com largura máxima de 400px
         panel = ft.Container(
             bgcolor=colors["secondary"],
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=10,
+            width=400,  # Largura máxima de 400px
             content=ft.Column([
                 ft.Row([
                     ft.IconButton(icon=ft.Icons.CLEAR_ALL, tooltip="Limpar tudo", on_click=clear_all),
@@ -2376,12 +3068,13 @@ class VPCRApp:
                 ft.TextField(
                     label="Buscar...",
                     on_change=lambda e: apply_search_filter(e.control.value),
-                    autofocus=True
+                    autofocus=True,
+                    expand=True  # Expandir para ocupar toda a largura disponível
                 ),
                 ft.Container(
                     content=ft.Column(checkboxes, tight=True, scroll=ft.ScrollMode.AUTO),
                     height=260,
-                    width=self.filter_widths.get(field_name, 200)
+                    expand=True  # Expandir para ocupar toda a largura disponível
                 ),
                 ft.Row([
                     ft.TextButton("Cancelar", on_click=cancel_and_close),
@@ -2390,20 +3083,12 @@ class VPCRApp:
             ], spacing=10)
         )
 
-        # Posicionamento: calcular deslocamento à esquerda baseado na ordem e larguras
-        left_offset = 0
-        spacing = 8  # mesmo spacing da Row
-        for name in self.filter_order:
-            if name == field_name:
-                break
-            left_offset += self.filter_widths.get(name, 0) + spacing
-
+        # Posicionamento: centralizar o painel na janela ou alinhar à esquerda com margem
         # Calcular coordenadas absolutas para posicionar a janela suspensa
-        # Obter a posição global dos filtros (aproximadamente 25px do topo do app + padding)
         filter_top_position = 110  # Valor ajustado para posicionar abaixo dos filtros
         
         # Configurar o contêiner do painel para posicionamento absoluto no overlay
-        self.dropdown_panel_container.left = left_offset + 15  # padding do contêiner principal
+        self.dropdown_panel_container.left = 30  # margem fixa da esquerda
         self.dropdown_panel_container.top = filter_top_position
         self.dropdown_panel_container.content = panel
         self.dropdown_panel_container.visible = True
@@ -2434,6 +3119,7 @@ class VPCRApp:
         
         # encontrar o container correto
         container_map = {
+            "VPCR": self.filter_vpcr_chips,
             "Sourcing Manager": self.filter_sourcing_manager_chips,
             "Status": self.filter_status_chips,
             "Supplier": self.filter_supplier_chips,
@@ -2443,14 +3129,40 @@ class VPCRApp:
         container = container_map.get(field_name)
         
         if container and container.content and len(container.content.controls) > 0:
-            if not selected:
-                text = f"{field_name}: Todos"
-            elif len(selected) == 1:
-                text = f"{field_name}: {list(selected)[0]}"
-            else:
-                text = f"{field_name}: {len(selected)} selecionados"
+            # Sempre mostrar apenas o nome do campo, nunca os valores selecionados
+            text = field_name
             
-            container.content.controls[0].value = text
+            # Criar nova estrutura com texto + badge (se houver seleções) + ícone dropdown
+            controls = [
+                ft.Text(text, size=12, color=colors["field_text"], expand=True)
+            ]
+            
+            # Adicionar badge com número se houver qualquer seleção (1 ou mais)
+            if selected and len(selected) > 0:
+                controls.append(
+                    ft.Container(
+                        content=ft.Text(
+                            str(len(selected)), 
+                            size=10, 
+                            color=ft.Colors.WHITE, 
+                            weight=ft.FontWeight.BOLD
+                        ),
+                        bgcolor=colors["accent"],
+                        width=20,
+                        height=20,
+                        border_radius=10,
+                        alignment=ft.alignment.center,
+                        margin=ft.margin.only(right=4)
+                    )
+                )
+            
+            # Ícone dropdown
+            controls.append(
+                ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=16, color=colors["field_text"])
+            )
+            
+            # Atualizar o container
+            container.content = ft.Row(controls, alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
             container.update()
 
     def close_dialog(self, dlg):
@@ -2503,6 +3215,15 @@ class VPCRApp:
         
         # Atualizar apenas a aparência dos cards sem recriar a lista
         self.update_card_selection_only()
+
+        # Garantir que painel direito mostre os detalhes agora
+        try:
+            if hasattr(self, 'right_panel') and hasattr(self, 'detail_main_content'):
+                if self.right_panel.content is not self.detail_main_content:
+                    self.right_panel.content = self.detail_main_content
+                    self.right_panel.update()
+        except Exception:
+            pass
 
     def update_detail_containers(self):
         """Atualiza os containers de detalhes após seleção de item"""
@@ -2639,7 +3360,7 @@ class VPCRApp:
 
     def save_card_changes(self, item):
         """Persiste alterações editáveis do card selecionado e reseta estado sujo.
-        (Assumindo que sample_data contém os dicionários base.)
+        Agora salva no banco de dados e registra mudanças no log.
         """
         try:
             if not item:
@@ -2647,20 +3368,57 @@ class VPCRApp:
             item_id = item.get("ID")
             if item_id is None:
                 return
+                
+            # Buscar item atual do banco de dados para comparação
+            existing_item = self.db_manager.get_item_from_db(item_id)
+            
             # Encontrar item base em sample_data
+            updated_data = {}
             for base in self.sample_data:
                 if base.get("ID") == item_id:
-                    # Atualizar campos conhecidos a partir de detail_fields
+                    # Campos editáveis que podem ser salvos
                     editable_fields = [
                         "Comments", "Continuity", "Link"
                     ]  # Expandir aqui se mais campos ficarem editáveis
+                    
                     for f in editable_fields:
                         if f in self.detail_fields:
-                            base[f] = self.detail_fields[f]
+                            # Mapear campo para nome do banco de dados
+                            db_field_map = {
+                                'Comments': 'comments',
+                                'Continuity': 'continuity', 
+                                'Link': 'link_vpcr'
+                            }
+                            db_field = db_field_map.get(f, f.lower())
+                            
+                            old_value = existing_item.get(db_field, '') if existing_item else base.get(f, '')
+                            new_value = self.detail_fields[f]
+                            
+                            # Atualizar em sample_data
+                            base[f] = new_value
+                            updated_data[f] = new_value
+                            
+                            # Registrar mudança no log se houve alteração
+                            if str(old_value) != str(new_value):
+                                self.db_manager.log_change(
+                                    item_id=str(item_id), 
+                                    field_name=db_field, 
+                                    old_value=old_value, 
+                                    new_value=new_value, 
+                                    change_type='manual_update'
+                                )
+                    
+                    # Adicionar ID aos dados para atualização
+                    updated_data['ID'] = str(item_id)
+                    
+                    # Atualizar no banco de dados
+                    self.db_manager.upsert_item(updated_data)
                     break
+                    
             # Remover do conjunto de sujos
             if hasattr(self, 'dirty_items') and item_id in self.dirty_items:
                 self.dirty_items.remove(item_id)
+                
             # Atualizar botão salvar
             if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
                 btn = self.card_save_buttons[item_id]
@@ -2670,14 +3428,21 @@ class VPCRApp:
                     btn.update()
                 except Exception:
                     pass
-            # Feedback visual
-            if hasattr(self, 'notify'):
-                self.notify(f"✅ Card {item_id} salvo", kind="success", auto_hide=2500)
+                    
+            # Feedback visual usando a notificação personalizada
+            self.show_custom_notification(
+                f"✅ Card {item_id} salvo com sucesso!",
+                color=ft.Colors.GREEN_400,
+                duration=2000
+            )
+            
         except Exception as ex:
-            if hasattr(self, 'notify'):
-                self.notify(f"❌ Erro ao salvar card: {ex}", kind="error")
-            else:
-                print("Erro ao salvar card:", ex)
+            print(f"Erro ao salvar card: {ex}")
+            self.show_custom_notification(
+                f"❌ Erro ao salvar card: {ex}",
+                color=ft.Colors.RED_400,
+                duration=4000
+            )
 
     def _open_link(self):
         """Abre o link em uma nova janela do navegador"""
@@ -2747,6 +3512,7 @@ class VPCRApp:
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Column([
                 ft.Row([
+                    self.filter_vpcr_chips,
                     self.filter_sourcing_manager_chips,
                     self.filter_status_chips,
                     self.filter_supplier_chips,
@@ -3248,10 +4014,45 @@ class VPCRApp:
             alignment=ft.alignment.top_left
         )
         
+        # Armazenar conteúdo principal de detalhes
+        self.detail_main_content = main_content
+
+        # Placeholder quando nenhum card estiver selecionado
+        placeholder_colors = self.theme_manager.get_theme_colors()
+        self.no_selection_placeholder = ft.Container(
+            content=ft.Column([
+                ft.Icon(ft.Icons.TOC, size=70, color=placeholder_colors.get("surface", ft.Colors.GREY)),
+                ft.Text(
+                    "Nenhum card selecionado",
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=placeholder_colors.get("text_secondary", ft.Colors.GREY_400)
+                ),
+                ft.Text(
+                    "Selecione um card à esquerda para visualizar os detalhes.",
+                    size=14,
+                    color=placeholder_colors.get("text_secondary", ft.Colors.GREY_500),
+                    text_align=ft.TextAlign.CENTER
+                )
+            ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=20),
+            expand=True,
+            bgcolor=placeholder_colors.get("secondary", "#2d2d2d"),
+            border_radius=8,
+            padding=20,
+            alignment=ft.alignment.center
+        )
+
+        # Contêiner do painel direito que será trocado entre placeholder e detalhes
+        self.right_panel = ft.Container(
+            content=self.detail_main_content if getattr(self, 'selected_item', None) else self.no_selection_placeholder,
+            expand=True
+        )
+
+        # Retornar layout final
         return ft.Container(
             content=ft.Row([
                 left_column,
-                main_content
+                self.right_panel
             ], spacing=15, expand=True, alignment=ft.MainAxisAlignment.START, tight=True),
             expand=True,
             padding=10,
