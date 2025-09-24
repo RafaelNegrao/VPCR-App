@@ -23,7 +23,8 @@ class ThemeManager:
                 "field_bg": "#2d2d2d",
                 "field_text": "#ffffff",
                 "field_border": "#444444",
-                "cor_font_settings": "#ffffff"       # Cor específica para textos em settings
+                "cor_font_settings": "#ffffff",
+                "selected_card": "#4a4a4a"       # Cor para card selecionado
             },
             "dracula": {
                 "primary": "#282a36",
@@ -35,13 +36,14 @@ class ThemeManager:
                 "card_bg": "#44475a",
                 "border": "#6272a4",
                 "text_primary": "#f8f8f2",           # Texto fora de containers
-                "text_secondary": "#8be9fd",          # Texto secundário fora de containers
+                "text_secondary": "#adb8bb",          # Texto secundário fora de containers
                 "text_container_primary": "#f8f8f2",    # Texto principal dentro de containers
                 "text_container_secondary": "#8be9fd",  # Texto secundário dentro de containers
-                "field_bg": "#44475a",
+                "field_bg": "#4a4d60",               # Fundo do campo igual à cor da borda
                 "field_text": "#8be9fd",
-                "field_border": "#6272a4",
-                "cor_font_settings": "#f8f8f2"       # Cor específica para textos em settings (laranja clara)
+                "field_border": "#4a4d60",           # Borda mais próxima da cor do container
+                "cor_font_settings": "#f8f8f2",       # Cor específica para textos em settings (laranja clara)
+                "selected_card": "#6272a4"       # Cor para card selecionado
             },
             "light_dracula": {
                 "primary": "#f8f8f2",
@@ -59,11 +61,14 @@ class ThemeManager:
                 "field_bg": "#ffffff",
                 "field_text": "#282a36",
                 "field_border": "#939df9",
-                "cor_font_settings": "#495057"   # Cor específica para textos em settings
+                "cor_font_settings": "#495057",   # Cor específica para textos em settings
+                "selected_card": "#e6e6fa"       # Cor para card selecionado
             }
         }
         self.current_theme = "dark"
+        self.font_size = 14  # Tamanho padrão da fonte
         self.load_theme()
+        self.load_font_size()
     
     def get_theme_colors(self):
         """Retorna as cores do tema atual"""
@@ -100,6 +105,36 @@ class ThemeManager:
                     self.current_theme = config.get("theme", "dark")
         except:
             pass
+    
+    def set_font_size(self, size):
+        """Define o tamanho da fonte"""
+        self.font_size = size
+        self.save_font_size()
+    
+    def save_font_size(self):
+        """Salva o tamanho da fonte em arquivo"""
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            config_dir = os.path.join(appdata, 'VPCR App', 'themes')
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, 'font_config.json')
+            with open(config_path, "w", encoding='utf-8') as f:
+                json.dump({"font_size": self.font_size}, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+    
+    def load_font_size(self):
+        """Carrega o tamanho da fonte salvo"""
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            config_dir = os.path.join(appdata, 'VPCR App', 'themes')
+            config_path = os.path.join(config_dir, 'font_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.font_size = config.get("font_size", 14)
+        except:
+            self.font_size = 14
 
 class VPCRApp:
     def __init__(self):
@@ -168,6 +203,10 @@ class VPCRApp:
         }
         # Item selecionado atualmente
         self.selected_item = None
+        self.selected_item_id = None
+        
+        # Criar tabela de todos se não existir
+        self.create_todos_table()
         
     def main(self, page: ft.Page):
         self.page = page
@@ -402,6 +441,10 @@ class VPCRApp:
             "Pendente": ft.Colors.ORANGE
         }.get(status_val, ft.Colors.GREY)
 
+        # Verificar se este item está selecionado
+        is_selected = self.selected_item_id == item.get("ID")
+        card_bg_color = colors["selected_card"] if is_selected else colors["card_bg"]
+
         # construir conteúdo do card dinamicamente conforme visible_fields
         rows = []
 
@@ -434,14 +477,31 @@ class VPCRApp:
             if val != "":
                 rows.append(ft.Row([ft.Text(f + ":", size=12, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(str(val), size=12, color=colors["text_container_secondary"])], spacing=8))
 
+        # Adicionar o ícone de notificação como última linha do conteúdo
+        notification_row = ft.Row(
+            [
+                ft.Container(expand=True),  # Espaço flexível
+                ft.IconButton(
+                    ft.Icons.NOTIFICATIONS,
+                    icon_size=18,
+                    icon_color=colors["accent"],
+                    on_click=lambda e, item=item: self.open_todo_dialog(item),
+                    tooltip="Gerenciar TODOs"
+                )
+            ],
+            alignment=ft.MainAxisAlignment.END
+        )
+        
+        # Adicionar a linha do ícone às linhas do card
+        rows.append(notification_row)
+
         return ft.Card(
             content=ft.Container(
                 content=ft.Column(rows, spacing=6),
                 padding=15,
-                expand=True,
                 on_click=lambda e: self.select_item(item)
             ),
-            color=colors["card_bg"],
+            color=card_bg_color,
             shadow_color=ft.Colors.BLACK26,
             elevation=2
         )
@@ -454,6 +514,153 @@ class VPCRApp:
             for item in self.filtered_data:
                 self.card_list.controls.append(self.create_card(item))
             self.card_list.update()
+
+    def create_todos_table(self):
+        """Cria a tabela de todos no banco de dados se não existir"""
+        import sqlite3
+        conn = sqlite3.connect('vpcr_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS todos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                completed BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (item_id) REFERENCES vpcr(id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+
+    def open_todo_dialog(self, item):
+        """Abre o diálogo de gerenciamento de TODOs para um item"""
+        colors = self.theme_manager.get_theme_colors()
+        item_id = item.get("ID")
+        
+        # Buscar todos existentes para este item
+        todos = self.get_todos_for_item(item_id)
+        
+        # Criar controles para os todos
+        todo_controls = []
+        for todo in todos:
+            todo_controls.append(
+                ft.Row([
+                    ft.Checkbox(
+                        value=todo['completed'],
+                        on_change=lambda e, tid=todo['id']: self.toggle_todo(tid)
+                    ),
+                    ft.Text(
+                        todo['description'],
+                        size=14,
+                        color=colors["text_primary"],
+                        style=ft.TextStyle(decoration=ft.TextDecoration.LINE_THROUGH if todo['completed'] else None)
+                    ),
+                    ft.IconButton(
+                        ft.Icons.DELETE,
+                        icon_size=16,
+                        icon_color=ft.Colors.RED,
+                        on_click=lambda e, tid=todo['id']: self.delete_todo(tid, item)
+                    )
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            )
+        
+        # Campo para novo todo
+        new_todo_field = ft.TextField(
+            label="Novo TODO",
+            hint_text="Digite a descrição do TODO",
+            expand=True
+        )
+        
+        def add_todo(e):
+            description = new_todo_field.value.strip()
+            if description:
+                self.add_todo(item_id, description)
+                new_todo_field.value = ""
+                self.open_todo_dialog(item)  # Reabrir para atualizar a lista
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"TODOs para: {item.get('Title', 'Item')}", size=18, weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Column(todo_controls, spacing=8, scroll=ft.ScrollMode.AUTO),
+                    ft.Divider(),
+                    ft.Row([
+                        new_todo_field,
+                        ft.IconButton(
+                            ft.Icons.ADD,
+                            icon_size=24,
+                            icon_color=colors["accent"],
+                            on_click=add_todo,
+                            tooltip="Adicionar TODO"
+                        )
+                    ], spacing=8)
+                ], spacing=16, tight=True),
+                width=500,
+                height=400
+            ),
+            actions=[
+                ft.TextButton("Fechar", on_click=lambda e: self.close_todo_dialog())
+            ]
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+    def get_todos_for_item(self, item_id):
+        """Busca todos os TODOs para um item específico"""
+        import sqlite3
+        conn = sqlite3.connect('vpcr_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id, description, completed FROM todos WHERE item_id = ? ORDER BY created_at', (item_id,))
+        todos = [{'id': row[0], 'description': row[1], 'completed': bool(row[2])} for row in cursor.fetchall()]
+        
+        conn.close()
+        return todos
+
+    def add_todo(self, item_id, description):
+        """Adiciona um novo TODO"""
+        import sqlite3
+        conn = sqlite3.connect('vpcr_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('INSERT INTO todos (item_id, description) VALUES (?, ?)', (item_id, description))
+        conn.commit()
+        conn.close()
+
+    def toggle_todo(self, todo_id):
+        """Alterna o status de conclusão de um TODO"""
+        import sqlite3
+        conn = sqlite3.connect('vpcr_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('UPDATE todos SET completed = NOT completed WHERE id = ?', (todo_id,))
+        conn.commit()
+        conn.close()
+
+    def delete_todo(self, todo_id, item):
+        """Remove um TODO"""
+        import sqlite3
+        conn = sqlite3.connect('vpcr_database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
+        conn.commit()
+        conn.close()
+        
+        # Reabrir o diálogo para atualizar
+        self.open_todo_dialog(item)
+
+    def close_todo_dialog(self):
+        """Fecha o diálogo de TODOs"""
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
 
     def populate_filter_options(self):
         """Popula as opções dos filtros com chips de multiseleção"""
@@ -646,6 +853,7 @@ class VPCRApp:
     def select_item(self, item):
         """Atualiza os campos detalhados com base no item selecionado"""
         self.selected_item = item
+        self.selected_item_id = item.get("ID")
         
         # Mapear dados do item para detail_fields
         self.detail_fields.update({
@@ -685,6 +893,9 @@ class VPCRApp:
         
         # Atualizar a UI dos containers direitos se eles existirem
         self.update_detail_containers()
+        
+        # Atualizar a lista de cards para refletir a seleção visual
+        self.update_card_list()
 
     def update_detail_containers(self):
         """Atualiza os containers de detalhes após seleção de item"""
@@ -921,7 +1132,7 @@ class VPCRApp:
         self.tf_initiated = ft.TextField(
             value=self.detail_fields.get("Initiated Date", ""), 
             label="Initiated Date", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"],
             height=40,
@@ -932,7 +1143,7 @@ class VPCRApp:
         self.tf_last_update = ft.TextField(
             value=self.detail_fields.get("Last Update", ""), 
             label="Last Update", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"],
             height=40,
@@ -943,7 +1154,7 @@ class VPCRApp:
         self.tf_closed_date = ft.TextField(
             value=self.detail_fields.get("Closed Date", ""), 
             label="Closed Date", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"],
             height=40,
@@ -954,7 +1165,7 @@ class VPCRApp:
         self.tf_category = ft.TextField(
             value=self.detail_fields.get("Category", ""), 
             label="Category", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"],
             height=40,
@@ -965,7 +1176,7 @@ class VPCRApp:
         self.tf_supplier = ft.TextField(
             value=self.detail_fields.get("Supplier", ""), 
             label="Supplier", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"],
             height=40,
@@ -978,7 +1189,7 @@ class VPCRApp:
             label="Part Numbers", 
             multiline=True, 
             min_lines=15,  # Altura mínima menor para permitir melhor adaptação
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
@@ -990,7 +1201,7 @@ class VPCRApp:
             label="Affected Plants", 
             multiline=True, 
             min_lines=15,  # Altura mínima menor para permitir melhor adaptação
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
@@ -1021,7 +1232,7 @@ class VPCRApp:
             label="Comentários",
             multiline=True, 
             min_lines=15,  # Altura mínima menor para permitir melhor adaptação
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
@@ -1069,22 +1280,22 @@ class VPCRApp:
         self.tf_requestor = ft.TextField(
             value=self.detail_fields.get("Requestor", ""), 
             label="Requestor", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=36, 
+            height=40, 
             on_change=lambda e: self._update_detail_field("Requestor", e.control.value)
         )
         
         self.tf_sourcing = ft.TextField(
             value=self.detail_fields.get("Sourcing", ""), 
             label="Sourcing", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=36, 
+            height=40, 
             on_change=lambda e: self._update_detail_field("Sourcing", e.control.value)
         )
         
@@ -1095,7 +1306,7 @@ class VPCRApp:
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=36, 
+            height=40, 
             on_change=lambda e: self._update_detail_field("SQIE", e.control.value)
         )
         
@@ -1106,72 +1317,100 @@ class VPCRApp:
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            height=36, 
+            height=40, 
             on_change=lambda e: self._update_detail_field("Continuity", e.control.value)
         )
 
-        # Mostrar como coluna com espaçamento maior entre campos
-        request_controls = [
-            self.tf_requestor,
-            self.tf_sourcing,
-            self.tf_sqie,
-            self.tf_continuity
-        ]
+        # Organizar Responsibles em duas colunas
+        request_col1 = [self.tf_requestor, self.tf_sourcing]
+        request_col2 = [self.tf_sqie, self.tf_continuity]
 
         self.detail_request = ft.Container(
-            content=ft.Column(request_controls, spacing=8),
-            bgcolor=colors["secondary"],
-            padding=12,
-            border_radius=8,
-            expand=True
-        )
-
-        # Documentation - criar TextFields organizados em 2 colunas
-        doc_fields = [
-            ("RFQ", False), ("DRA", False), ("DQR", False), ("LOI", False), ("Tooling", False), ("Drawing", False),
-            ("PO Alfa", False), ("SR", False), ("Deviation", False), ("PO Beta", False), ("PPAP", False), ("GBPA", False), ("EDI", False), ("SCR", False)
-        ]
-        self.tf_doc = {}
-        
-        # Criar os TextFields
-        for name, editable in doc_fields:
-            tf = ft.TextField(
-                value=self.detail_fields.get(name, ""), 
-                label=name, 
-                text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
-                bgcolor=colors["field_bg"], 
-                border_color=colors["field_border"], 
-                expand=True, 
-                height=36, 
-                on_change=lambda e, n=name: self._update_detail_field(n, e.control.value)
-            )
-            self.tf_doc[name] = tf
-
-        # Organizar em duas colunas
-        left_column_fields = []
-        right_column_fields = []
-        
-        field_names = [name for name, _ in doc_fields]
-        mid_point = len(field_names) // 2
-        
-        for i, field_name in enumerate(field_names):
-            if i < mid_point:
-                left_column_fields.append(self.tf_doc[field_name])
-            else:
-                right_column_fields.append(self.tf_doc[field_name])
-
-        self.detail_doc = ft.Container(
             content=ft.Row([
-                ft.Column(left_column_fields, spacing=8, expand=True),
-                ft.Column(right_column_fields, spacing=8, expand=True)
+                ft.Column(request_col1, spacing=20, expand=True),
+                ft.Column(request_col2, spacing=20, expand=True)
             ], spacing=12),
             bgcolor=colors["secondary"],
             padding=12,
             border_radius=8,
+            expand=True,
+            height=120  # Altura reduzida para layout com 2 colunas
+        )
+
+        # Documentation - criar TextFields organizados em 4 colunas
+        doc_fields = [
+            ("RFQ", False), ("DRA", False), ("DQR", False), ("LOI", False), ("Tooling", False), ("Drawing", False),
+            ("PO Alfa", False), ("SR", False), ("Deviation", False), ("PO Beta", False), ("PPAP", False), ("GBPA", False), ("EDI", False), ("SCR", False),
+            ("", False), ("", False)  # Campos invisíveis para alinhamento
+        ]
+        self.tf_doc = {}
+        
+        # Criar os TextFields
+        invisible_counter = 0
+        for name, editable in doc_fields:
+            if name == "":  # Campos invisíveis
+                tf = ft.Container(height=40)  # Container vazio com mesma altura dos campos
+                self.tf_doc[f"invisible_{invisible_counter}"] = tf
+                invisible_counter += 1
+            else:
+                tf = ft.TextField(
+                    value=self.detail_fields.get(name, ""), 
+                    label=name, 
+                    text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
+                    bgcolor=colors["field_bg"], 
+                    border_color=colors["field_border"], 
+                    expand=True, 
+                    height=40, 
+                    on_change=lambda e, n=name: self._update_detail_field(n, e.control.value)
+                )
+                self.tf_doc[name] = tf
+
+        # Organizar em quatro colunas
+        col1_fields = []
+        col2_fields = []
+        col3_fields = []
+        col4_fields = []
+        
+        # Criar lista de chaves para acessar os campos (incluindo invisíveis)
+        field_keys = []
+        invisible_counter = 0
+        for name, _ in doc_fields:
+            if name == "":
+                field_keys.append(f"invisible_{invisible_counter}")
+                invisible_counter += 1
+            else:
+                field_keys.append(name)
+        
+        fields_per_column = 4  # Agora temos exatamente 4 campos por coluna (16 total)
+        
+        for i, field_key in enumerate(field_keys):
+            if i < 4:
+                col1_fields.append(self.tf_doc[field_key])
+            elif i < 8:
+                col2_fields.append(self.tf_doc[field_key])
+            elif i < 12:
+                col3_fields.append(self.tf_doc[field_key])
+            else:
+                col4_fields.append(self.tf_doc[field_key])
+
+        self.detail_doc = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Column(col1_fields, spacing=20, expand=True),
+                    ft.Column(col2_fields, spacing=20, expand=True),
+                    ft.Column(col3_fields, spacing=20, expand=True),
+                    ft.Column(col4_fields, spacing=20, expand=True)
+                ], spacing=12)
+            ], expand=True, scroll=ft.ScrollMode.ADAPTIVE),
+            bgcolor=colors["secondary"],
+            padding=12,
+            border_radius=8,
             expand=True
         )
 
-        # L1: agrupar Overview, Request e Documentation numa linha horizontal
+        # L2: Log com largura dos containers Request e Documentation e metade da altura
+        
+        # Container do Overview
         left_top = ft.Container(
             content=ft.Column([
                 ft.Text("VPCR Overview", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
@@ -1180,35 +1419,12 @@ class VPCRApp:
             expand=True,
             padding=ft.padding.all(10)
         )
-        
-        middle_top = ft.Container(
-            content=ft.Column([
-                ft.Text("Request & Responsibility", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
-                self.detail_request
-            ], spacing=6, expand=True),
-            expand=True,
-            padding=ft.padding.all(10)
-        )
-        
-        right_top = ft.Container(
-            content=ft.Column([
-                ft.Text("Documentation", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
-                self.detail_doc
-            ], spacing=6, expand=True),
-            expand=True,
-            padding=ft.padding.all(10)
-        )
-
-        # L2: Log com largura dos containers Request e Documentation e metade da altura
         self.detail_log = ft.Container(
-            content=ft.Column([
-                ft.Text("Log", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), 
-                ft.Container(
-                    content=ft.Text(self.detail_fields.get("Log", ""), size=12, color=colors["text_container_secondary"]), 
-                    expand=True, 
-                    alignment=ft.alignment.top_left
-                )
-            ], spacing=6), 
+            content=ft.Container(
+                content=ft.Text(self.detail_fields.get("Log", ""), size=12, color=colors["text_container_secondary"]), 
+                expand=True, 
+                alignment=ft.alignment.top_left
+            ), 
             bgcolor=colors["secondary"], 
             padding=12, 
             border_radius=8, 
@@ -1300,20 +1516,33 @@ class VPCRApp:
             margin=ft.margin.only(bottom=10)
         )
 
-        # Layout final: Status line acima, depois Overview ocupa toda altura, Request/Documentation/Log na lateral direita
+        # Layout final: Status line acima, depois Overview à esquerda e coluna direita com Request/Documentation/Log
         main_content = ft.Container(
             content=ft.Column([
                 status_line,  # Linha de status no topo
                 ft.Row([
-                    left_top,  # Overview - toda altura
+                    left_top,  # Overview - toda altura à esquerda
                     ft.Column([
-                        ft.Row([
-                            middle_top,  # Request & Responsibility
-                            right_top    # Documentation
-                        ], spacing=10, expand=True),
                         ft.Container(
-                            content=self.detail_log,  # Log ocupará metade da altura
-                            expand=True,  # Permite que o Log se expanda verticalmente
+                            content=ft.Column([
+                                ft.Text("Request & Responsibility", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                                self.detail_request
+                            ], spacing=6),
+                            padding=ft.padding.all(10)
+                        ),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("Documentation", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                                self.detail_doc
+                            ], spacing=6),
+                            padding=ft.padding.all(10)
+                        ),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("Log", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                                self.detail_log
+                            ], spacing=6),
+                            expand=1,
                             padding=ft.padding.all(10)
                         )
                     ], spacing=10, expand=True)
@@ -1374,6 +1603,41 @@ class VPCRApp:
             on_change=change_theme
         )
 
+        # Font size slider
+        def change_font_size(e):
+            size = int(e.control.value)
+            self.theme_manager.set_font_size(size)
+            
+            # Mostrar notificação
+            snack_bar = ft.SnackBar(
+                content=ft.Text(f"Tamanho da fonte alterado para: {size}px"),
+                action="OK",
+                action_color=self.theme_manager.get_theme_colors()["accent"]
+            )
+            self.page.snack_bar = snack_bar
+            snack_bar.open = True
+            
+            # Atualizar apenas os componentes que usam fonte, sem recriar a página
+            self.update_detail_containers()
+            self.page.update()
+        
+        font_size_slider = ft.Column([
+            ft.Text("Tamanho da Fonte dos TextFields", size=16, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+            ft.Slider(
+                min=10,
+                max=24,
+                value=self.theme_manager.font_size,
+                divisions=14,
+                label="{value}px",
+                on_change_end=change_font_size,
+                active_color=colors["accent"],
+                inactive_color=colors["surface"]
+            ),
+            ft.Text(f"Tamanho atual: {self.theme_manager.font_size}px", 
+                   size=12, 
+                   color=colors["text_secondary"])
+        ], spacing=8)
+
         # Campos configuráveis visíveis nos cards
         fields_checkboxes = []
         for field in self.db_headers:
@@ -1404,13 +1668,15 @@ class VPCRApp:
             content=ft.Column([
                 ft.Text("Tema da Aplicação", size=18, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
                 ft.Divider(),
-                ft.Container(content=ft.Column([theme_selector], scroll=ft.ScrollMode.AUTO), expand=True)
+                ft.Container(content=ft.Column([theme_selector], scroll=ft.ScrollMode.AUTO), expand=False),
+                ft.Divider(),
+                font_size_slider
             ], spacing=10),
             bgcolor=colors["secondary"],
             padding=12,
             border_radius=8,
             width=360,
-            height=300
+            height=400  # Aumentado para acomodar o controle de fonte
         )
 
         fields_container = ft.Container(
