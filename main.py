@@ -1,6 +1,148 @@
 import flet as ft
 import json
 import os
+import sqlite3
+from datetime import datetime
+import asyncio
+
+class NotificationIconAnimator:
+    """Classe para gerenciar animação dos ícones de notificação"""
+    
+    def __init__(self):
+        self.animated_icons = {}  # Dicionário para controlar ícones animados
+        self.animation_tasks = {}  # Tasks de animação ativas
+    
+    async def start_pulse_animation(self, icon_button, item_id):
+        """Inicia animação de pulso com fade no ícone"""
+        if item_id in self.animation_tasks:
+            return  # Já está animando
+            
+        async def pulse():
+            try:
+                original_color = icon_button.icon_color
+                while item_id in self.animated_icons:
+                    # Fade out - ficar mais transparente/escuro
+                    icon_button.icon_color = ft.Colors.ORANGE_200
+                    icon_button.update()
+                    await asyncio.sleep(0.5)
+                    
+                    # Fade in - voltar para cor original
+                    if item_id in self.animated_icons:  # Verifica se ainda deve animar
+                        icon_button.icon_color = ft.Colors.ORANGE
+                        icon_button.update()
+                        await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Erro na animação: {e}")
+        
+        self.animated_icons[item_id] = True
+        self.animation_tasks[item_id] = asyncio.create_task(pulse())
+    
+    def stop_animation(self, icon_button, item_id):
+        """Para a animação do ícone"""
+        if item_id in self.animated_icons:
+            del self.animated_icons[item_id]
+        
+        if item_id in self.animation_tasks:
+            self.animation_tasks[item_id].cancel()
+            del self.animation_tasks[item_id]
+        
+        # Restaura cor original
+        icon_button.icon_color = ft.Colors.ORANGE
+        icon_button.update()
+    
+    def cleanup(self):
+        """Limpa todas as animações"""
+        for task in self.animation_tasks.values():
+            task.cancel()
+        self.animation_tasks.clear()
+        self.animated_icons.clear()
+
+class DatabaseManager:
+    """Classe para gerenciar operações no banco de dados"""
+    
+    def __init__(self, db_path='vpcr_database.db'):
+        self.db_path = db_path
+        self.create_todos_table()
+    
+    def get_connection(self):
+        """Cria uma nova conexão com o banco de dados"""
+        return sqlite3.connect(self.db_path)
+    
+    def create_todos_table(self):
+        """Cria a tabela de todos no banco de dados se não existir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS todos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL,
+                    description TEXT NOT NULL,
+                    completed BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+    
+    def get_todos_for_item(self, item_id):
+        """Busca todos os TODOs para um item específico"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, description, completed FROM todos WHERE item_id = ? ORDER BY created_at', (item_id,))
+            return [{'id': row[0], 'description': row[1], 'completed': bool(row[2])} for row in cursor.fetchall()]
+    
+    def add_todo(self, item_id, description):
+        """Adiciona um novo TODO"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO todos (item_id, description) VALUES (?, ?)', (item_id, description))
+            conn.commit()
+            return cursor.lastrowid
+    
+    def update_todo(self, todo_id, description=None, completed=None):
+        """Atualiza um TODO existente"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if description is not None:
+                cursor.execute('UPDATE todos SET description = ? WHERE id = ?', (description, todo_id))
+            if completed is not None:
+                cursor.execute('UPDATE todos SET completed = ? WHERE id = ?', (completed, todo_id))
+            conn.commit()
+    
+    def toggle_todo(self, todo_id):
+        """Alterna o status de conclusão de um TODO"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE todos SET completed = NOT completed WHERE id = ?', (todo_id,))
+            conn.commit()
+    
+    def delete_todo(self, todo_id):
+        """Remove um TODO"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
+            conn.commit()
+    
+    def get_todos_count(self, item_id):
+        """Retorna a contagem de TODOs para um item"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) as total, SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) as completed FROM todos WHERE item_id = ?', (item_id,))
+            row = cursor.fetchone()
+            return {'total': row[0], 'completed': row[1] or 0}
+    
+    def has_todos(self, item_id):
+        """Verifica se um item tem TODOs"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM todos WHERE item_id = ?', (item_id,))
+            return cursor.fetchone()[0] > 0
+    
+    def has_incomplete_todos(self, item_id):
+        """Verifica se um item tem TODOs incompletos"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM todos WHERE item_id = ? AND completed = 0', (item_id,))
+            return cursor.fetchone()[0] > 0
 
 class ThemeManager:
     """Gerenciador de temas da aplicação"""
@@ -139,6 +281,10 @@ class ThemeManager:
 class VPCRApp:
     def __init__(self):
         self.theme_manager = ThemeManager()
+        self.db_manager = DatabaseManager()
+        self.icon_animator = NotificationIconAnimator()
+        # Dicionário para rastrear ícones animados
+        self.animated_icons = {}
         # Cabeçalho do 'banco de dados' — deve corresponder ao Controle VPCR.xlsb
         self.db_headers = [
             "ID",
@@ -205,8 +351,158 @@ class VPCRApp:
         self.selected_item = None
         self.selected_item_id = None
         
-        # Criar tabela de todos se não existir
-        self.create_todos_table()
+        # Filtro para mostrar apenas cards com TODOs ativos
+        self.show_only_active_todos = False
+        
+    def initialize_icon_animations(self):
+        """Inicializa as animações dos ícones para itens com TODOs"""
+        for item in self.sample_data:
+            item_id = item.get("ID")
+            if self.db_manager.has_todos(item_id):
+                # Como os cards ainda não foram criados, a animação será iniciada 
+                # no método create_card quando o card for criado
+                pass
+    
+    def update_icon_animations(self):
+        """Atualiza as animações dos ícones após mudanças nos TODOs"""
+        # Atualizar apenas os itens que não devem mais ser animados
+        active_ids = {item.get("ID") for item in self.sample_data if self.db_manager.has_incomplete_todos(item.get("ID"))}
+        for item_id in list(self.animated_icons.keys()):
+            if item_id not in active_ids:
+                try:
+                    btn = self.animated_icons[item_id]
+                    btn.opacity = 1.0
+                except Exception:
+                    pass
+                del self.animated_icons[item_id]
+        
+        # Atualizar lista de cards para refletir mudanças nos ícones
+        if hasattr(self, 'card_list'):
+            self.update_card_list()
+            if hasattr(self, 'page'):
+                self.page.update()
+    
+    def start_icon_animation(self, icon_button, item_id):
+        """Inicia animação síncrona do ícone com fade melhorado"""
+        import time
+        fade_steps = 10  # Número de passos para fade suave
+        
+        while True:  # Continuar animação enquanto o item tiver TODOs incompletos
+            try:
+                # Verificar se ainda deve animar este item
+                if item_id not in self.animated_icons:
+                    break
+                
+                # Obter a referência mais atualizada do botão
+                current_btn = self.animated_icons.get(item_id)
+                if current_btn is None:  # O botão foi removido do dicionário
+                    break
+                    
+                # Usar sempre a referência mais atual
+                icon_button = current_btn
+                
+                # Fade out gradual
+                for step in range(fade_steps):
+                    # Verificar a cada step se deve parar
+                    if item_id not in self.animated_icons:
+                        # Resetar opacidade antes de sair
+                        current_btn = self.animated_icons.get(item_id)
+                        if current_btn:  # Se ainda existe uma referência
+                            current_btn.opacity = 1.0
+                            if hasattr(self, 'page') and self.page:
+                                self.page.update()
+                        return
+                    
+                    # Obter referência atualizada
+                    current_btn = self.animated_icons.get(item_id)
+                    if not current_btn:  # Botão removido durante animação
+                        return
+                        
+                    opacity = 1.0 - (step / fade_steps * 0.7)  # De 1.0 até 0.3
+                    current_btn.opacity = opacity
+                    if hasattr(self, 'page') and self.page:
+                        self.page.update()
+                    time.sleep(0.03)  # 30ms por step = 300ms total para fade out
+                
+                # Verificar antes da pausa
+                if item_id not in self.animated_icons:
+                    current_btn = self.animated_icons.get(item_id)
+                    if current_btn:
+                        current_btn.opacity = 1.0
+                        if hasattr(self, 'page') and self.page:
+                            self.page.update()
+                    return
+                
+                # Manter opacidade baixa por um momento
+                time.sleep(0.1)
+                
+                # Fade in gradual
+                for step in range(fade_steps):
+                    # Verificar a cada step se deve parar
+                    if item_id not in self.animated_icons:
+                        # Resetar opacidade antes de sair
+                        current_btn = self.animated_icons.get(item_id)
+                        if current_btn:
+                            current_btn.opacity = 1.0
+                            if hasattr(self, 'page') and self.page:
+                                self.page.update()
+                        return
+                    
+                    # Obter referência atualizada
+                    current_btn = self.animated_icons.get(item_id)
+                    if not current_btn:  # Botão removido durante animação
+                        return
+                        
+                    opacity = 0.3 + (step / fade_steps * 0.7)  # De 0.3 até 1.0
+                    current_btn.opacity = opacity
+                    if hasattr(self, 'page') and self.page:
+                        self.page.update()
+                    time.sleep(0.03)  # 30ms por step = 300ms total para fade in
+                
+                # Verificar antes da pausa final
+                if item_id not in self.animated_icons:
+                    current_btn = self.animated_icons.get(item_id)
+                    if current_btn:
+                        current_btn.opacity = 1.0
+                        if hasattr(self, 'page') and self.page:
+                            self.page.update()
+                    return
+                
+                # Pausa antes do próximo ciclo
+                time.sleep(0.8)  # Pausa entre pulsações
+                
+            except Exception as e:
+                # Se ocorrer erro, tentar continuar se for um erro transitório
+                time.sleep(0.5)
+                
+                # Se o item não está mais no dicionário, parar a animação
+                if item_id not in self.animated_icons:
+                    break
+                
+        # Garantir que a opacidade seja resetada quando o loop terminar
+        try:
+            icon_button.opacity = 1.0
+            if hasattr(self, 'page') and self.page:
+                self.page.update()
+        except Exception:
+            pass
+        
+    def stop_all_animations(self):
+        """Para todas as animações ativas"""
+        # Limpar o dicionário de ícones animados para parar as animações
+        animated_items = list(self.animated_icons.keys())
+        for item_id in animated_items:
+            # Resetar opacidade do ícone
+            if item_id in self.animated_icons:
+                icon_button = self.animated_icons[item_id]
+                icon_button.opacity = 1.0
+        
+        # Limpar o dicionário para parar as animações
+        self.animated_icons.clear()
+        
+        # Atualizar a página para aplicar as mudanças
+        if hasattr(self, 'page') and self.page:
+            self.page.update()
         
     def main(self, page: ft.Page):
         self.page = page
@@ -219,6 +515,9 @@ class VPCRApp:
         
         # Criar componentes
         self.create_components()
+        
+        # Inicializar animações dos ícones para itens com TODOs
+        self.initialize_icon_animations()
         
         # Adicionar o painel dropdown ao overlay da página para ficar suspenso
         self.page.overlay.append(self.dropdown_panel_container)
@@ -379,6 +678,19 @@ class VPCRApp:
         # Popular opções únicas a partir dos dados
         self.populate_filter_options()
 
+        # Switch para mostrar apenas TODOs ativos
+        def on_todos_filter_change(e):
+            self.show_only_active_todos = e.control.value
+            
+            # Aplicar filtro (isso recria os cards) sem parar as animações
+            self.filter_data()
+        
+        self.todos_filter_switch = ft.Switch(
+            label="Apenas TODOs ativos",
+            value=self.show_only_active_todos,
+            on_change=on_todos_filter_change
+        )
+
         # Painel dropdown customizado (inicialmente oculto)
         # Agora configurado para usar no page.overlay (suspenso)
         self.dropdown_panel_container = ft.Container(
@@ -399,6 +711,9 @@ class VPCRApp:
         requestor_sel = self.filter_selections.get("Requestor", set())
         continuity_sel = self.filter_selections.get("Continuity", set())
         
+        # Salvar IDs com animações antes de filtrar para preservá-las
+        animated_before_filter = set(self.animated_icons.keys())
+        
         self.filtered_data = []
         for item in self.sample_data:
             def matches_multi(selected_set, value):
@@ -412,7 +727,14 @@ class VPCRApp:
             requestor_match = matches_multi(requestor_sel, item.get("Requestor", ""))
             continuity_match = matches_multi(continuity_sel, item.get("Continuity", ""))
             
-            if sm_match and status_multi_match and supplier_match and requestor_match and continuity_match:
+            # Filtro de TODOs ativos
+            todos_match = True
+            if self.show_only_active_todos:
+                item_id = item.get("ID")
+                has_incomplete_todos = self.db_manager.has_incomplete_todos(item_id)
+                todos_match = has_incomplete_todos
+            
+            if sm_match and status_multi_match and supplier_match and requestor_match and continuity_match and todos_match:
                 self.filtered_data.append(item)
         
         # Mostrar notificação do resultado do filtro
@@ -477,30 +799,61 @@ class VPCRApp:
             if val != "":
                 rows.append(ft.Row([ft.Text(f + ":", size=12, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(str(val), size=12, color=colors["text_container_secondary"])], spacing=8))
 
-        # Adicionar o ícone de notificação como última linha do conteúdo
-        notification_row = ft.Row(
-            [
-                ft.Container(expand=True),  # Espaço flexível
-                ft.IconButton(
-                    ft.Icons.NOTIFICATIONS,
-                    icon_size=18,
-                    icon_color=colors["accent"],
-                    on_click=lambda e, item=item: self.open_todo_dialog(item),
-                    tooltip="Gerenciar TODOs"
-                )
-            ],
-            alignment=ft.MainAxisAlignment.END
+        # Adicionar linha com o ícone de notificação (antes de instanciar container principal)
+        def handle_notification_click(e, current_item=item):
+            print(f"DEBUG: Clique no sino para item ID={current_item.get('ID')} Title={current_item.get('Title')}")
+            self.open_todo_dialog(current_item)
+
+        # Verificar se existe TODOs para este item
+        item_id = item.get("ID")
+        has_incomplete = self.db_manager.has_incomplete_todos(item_id)
+        
+        # Definir cor do ícone baseado no status
+        notification_color = ft.Colors.ORANGE if has_incomplete else colors["accent"]
+        
+        # Criar o IconButton com tamanho maior
+        notification_button = ft.IconButton(
+            ft.Icons.NOTIFICATIONS,
+            icon_size=28,  # Aumentado para 28px
+            icon_color=notification_color,
+            on_click=handle_notification_click,
+            tooltip="Gerenciar TODOs"
         )
         
-        # Adicionar a linha do ícone às linhas do card
-        rows.append(notification_row)
+        # Animar sempre que houver TODOs incompletos, independente do filtro
+        if has_incomplete:
+            # Se já está animando este item, não iniciar nova animação
+            if item_id not in self.animated_icons:
+                self.animated_icons[item_id] = notification_button
+                # Iniciar animação em thread separada
+                import threading
+                animation_thread = threading.Thread(
+                    target=self.start_icon_animation, 
+                    args=(notification_button, item_id)
+                )
+                animation_thread.daemon = True
+                animation_thread.start()
+            else:
+                # Se já estava animando, apenas atualizar a referência do botão
+                self.animated_icons[item_id] = notification_button
+
+        rows.append(
+            ft.Row([
+                ft.Container(expand=True),  # Espaço vazio expansível
+                notification_button
+            ], alignment=ft.MainAxisAlignment.END)
+        )
+
+        # Container principal do card (agora inclui a linha do sino)
+        column = ft.Column(rows, spacing=6)
+        card_container = ft.Container(
+            content=column,
+            padding=15,
+            on_click=lambda e: self.select_item(item)
+        )
 
         return ft.Card(
-            content=ft.Container(
-                content=ft.Column(rows, spacing=6),
-                padding=15,
-                on_click=lambda e: self.select_item(item)
-            ),
+            content=card_container,
             color=card_bg_color,
             shadow_color=ft.Colors.BLACK26,
             elevation=2
@@ -510,157 +863,337 @@ class VPCRApp:
         """Atualiza a lista de cards"""
         if hasattr(self, 'card_list'):
             # ListView usa `controls` também
+            
+            # Salvar animações ativas antes de limpar os cards
+            active_animations = {}
+            for item_id, btn in self.animated_icons.items():
+                active_animations[item_id] = True
+            
             self.card_list.controls.clear()
             for item in self.filtered_data:
                 self.card_list.controls.append(self.create_card(item))
+            
+            # Restaurar animações para os cards recriados que devem continuar animando
+            for item in self.filtered_data:
+                item_id = item.get("ID")
+                # Se este item tinha animação ativa anteriormente e tem TODOs incompletos
+                if item_id in active_animations and self.db_manager.has_incomplete_todos(item_id):
+                    # Reativar sua animação (será iniciada no create_card se necessário)
+                    pass  # O create_card já fará isso automaticamente
+                    
             self.card_list.update()
-
-    def create_todos_table(self):
-        """Cria a tabela de todos no banco de dados se não existir"""
-        import sqlite3
-        conn = sqlite3.connect('vpcr_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS todos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_id INTEGER NOT NULL,
-                description TEXT NOT NULL,
-                completed BOOLEAN DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (item_id) REFERENCES vpcr(id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
 
     def open_todo_dialog(self, item):
         """Abre o diálogo de gerenciamento de TODOs para um item"""
+        if not item:
+            print("DEBUG: open_todo_dialog chamado com item=None")
+            return
+        
+        print(f"DEBUG: open_todo_dialog iniciado para item: {item.get('Title', 'Item')}")
         colors = self.theme_manager.get_theme_colors()
-        item_id = item.get("ID")
+        item_id = item.get("ID") or item.get("id")
+        print(f"DEBUG: item_id detectado = {item_id}")
         
-        # Buscar todos existentes para este item
-        todos = self.get_todos_for_item(item_id)
+        if item_id is None:
+            print("DEBUG: item sem ID válido. Abortando diálogo.")
+            return
         
-        # Criar controles para os todos
-        todo_controls = []
-        for todo in todos:
-            todo_controls.append(
-                ft.Row([
+        try:
+            print("DEBUG: Iniciando carregamento dos TODOs...")
+            # Lista temporária para armazenar TODOs durante a edição
+            self.temp_todos = []
+            
+            # Carregar TODOs existentes do banco
+            existing_todos = self.db_manager.get_todos_for_item(item_id)
+            print(f"DEBUG: {len(existing_todos)} TODOs encontrados no banco")
+            for todo in existing_todos:
+                self.temp_todos.append({
+                    'id': todo['id'],
+                    'description': todo['description'], 
+                    'completed': todo['completed'],
+                    'is_existing': True
+                })
+            
+            # Se não há TODOs, adicionar um campo vazio
+            if not self.temp_todos:
+                self.temp_todos.append({
+                    'id': None,
+                    'description': '',
+                    'completed': False,
+                    'is_existing': False
+                })
+                print("DEBUG: Adicionado TODO vazio inicial")
+            
+            print("DEBUG: Definindo funções internas...")
+            def create_todo_row(todo_data, index):
+                """Cria uma linha de TODO com checkbox e campo de texto"""
+                def on_checkbox_change(e):
+                    self.temp_todos[index]['completed'] = e.control.value
+                
+                def on_text_change(e):
+                    self.temp_todos[index]['description'] = e.control.value
+                
+                def delete_todo_row(e):
+                    if len(self.temp_todos) > 1:
+                        self.temp_todos.pop(index)
+                        self.refresh_todo_dialog(item, item_id, colors)
+                
+                return ft.Row([
                     ft.Checkbox(
-                        value=todo['completed'],
-                        on_change=lambda e, tid=todo['id']: self.toggle_todo(tid)
+                        value=todo_data['completed'],
+                        on_change=on_checkbox_change
                     ),
-                    ft.Text(
-                        todo['description'],
-                        size=14,
-                        color=colors["text_primary"],
-                        style=ft.TextStyle(decoration=ft.TextDecoration.LINE_THROUGH if todo['completed'] else None)
+                    ft.TextField(
+                        value=todo_data['description'],
+                        hint_text="Digite a descrição do TODO...",
+                        multiline=True,
+                        min_lines=1,
+                        max_lines=3,
+                        filled=True,
+                        bgcolor=colors["field_bg"],
+                        color=colors["field_text"],
+                        border_color=colors["field_border"],
+                        on_change=on_text_change,
+                        expand=True
                     ),
                     ft.IconButton(
                         ft.Icons.DELETE,
-                        icon_size=16,
                         icon_color=ft.Colors.RED,
-                        on_click=lambda e, tid=todo['id']: self.delete_todo(tid, item)
+                        icon_size=20,
+                        on_click=delete_todo_row,
+                        disabled=len(self.temp_todos) <= 1
                     )
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                ], alignment=ft.MainAxisAlignment.START, spacing=8)
+            
+            def add_new_todo(e):
+                """Adiciona uma nova linha de TODO"""
+                self.temp_todos.append({
+                    'id': None,
+                    'description': '',
+                    'completed': False,
+                    'is_existing': False
+                })
+                self.refresh_todo_dialog(item, item_id, colors)
+            
+            def save_and_close(e):
+                """Salva todos os TODOs no banco e fecha o diálogo"""
+                try:
+                    # Primeiro, excluir TODOs que foram removidos
+                    existing_ids = {todo['id'] for todo in existing_todos if todo['id']}
+                    temp_ids = {todo['id'] for todo in self.temp_todos if todo['id'] and todo['is_existing']}
+                    
+                    # IDs que foram removidos
+                    removed_ids = existing_ids - temp_ids
+                    for todo_id in removed_ids:
+                        self.db_manager.delete_todo(todo_id)
+                    
+                    # Salvar/atualizar TODOs
+                    for todo_data in self.temp_todos:
+                        description = todo_data['description'].strip()
+                        if description:  # Só salvar se tem descrição
+                            if todo_data['is_existing'] and todo_data['id']:
+                                # Atualizar TODO existente
+                                self.db_manager.update_todo(
+                                    todo_data['id'],
+                                    description=description,
+                                    completed=todo_data['completed']
+                                )
+                            else:
+                                # Criar novo TODO
+                                new_id = self.db_manager.add_todo(item_id, description)
+                                if todo_data['completed']:
+                                    # Se já está marcado como completo, atualizar
+                                    self.db_manager.update_todo(new_id, completed=True)
+                    
+                    self.close_todo_dialog()
+                    print("TODOs salvos com sucesso!")
+                    
+                except Exception as ex:
+                    print(f"Erro ao salvar TODOs: {ex}")
+            
+            print("DEBUG: Chamando refresh_todo_dialog...")
+            self.refresh_todo_dialog(item, item_id, colors, save_and_close, add_new_todo)
+            print("DEBUG: open_todo_dialog concluído com sucesso")
+            
+        except Exception as ex:
+            import traceback
+            print("ERRO em open_todo_dialog:", ex)
+            traceback.print_exc()
+    
+    def refresh_todo_dialog(self, item, item_id, colors, save_and_close=None, add_new_todo=None):
+        """Atualiza o conteúdo do diálogo de TODOs"""
+        
+        # Função para adicionar um novo TODO
+        def add_new_todo_handler(e):
+            self.temp_todos.append({
+                'id': None,
+                'description': '',
+                'completed': False,
+                'is_existing': False
+            })
+            self.refresh_todo_dialog(item, item_id, colors)
+        
+        # Função para salvar e fechar
+        def save_and_close_handler(e):
+            try:
+                # Carregar TODOs existentes do banco para comparação
+                existing_todos = self.db_manager.get_todos_for_item(item_id)
+                existing_ids = {todo['id'] for todo in existing_todos}
+                temp_ids = {todo['id'] for todo in self.temp_todos if todo['id'] and todo['is_existing']}
+                
+                # Deletar TODOs removidos
+                removed_ids = existing_ids - temp_ids
+                for todo_id in removed_ids:
+                    self.db_manager.delete_todo(todo_id)
+                
+                # Salvar/atualizar TODOs
+                for todo_data in self.temp_todos:
+                    description = todo_data['description'].strip()
+                    if description:  # Só salvar se tem descrição
+                        if todo_data['is_existing'] and todo_data['id']:
+                            # Atualizar TODO existente
+                            self.db_manager.update_todo(
+                                todo_data['id'],
+                                description=description,
+                                completed=todo_data['completed']
+                            )
+                        else:
+                            # Criar novo TODO
+                            new_id = self.db_manager.add_todo(item_id, description)
+                            if todo_data['completed']:
+                                self.db_manager.update_todo(new_id, completed=True)
+                
+                self.close_todo_dialog()
+                # Atualizar animações dos ícones após salvar
+                self.update_icon_animations()
+                
+            except Exception as ex:
+                print(f"Erro ao salvar TODOs: {ex}")
+                import traceback
+                traceback.print_exc()
+        
+        # Criar linhas de TODOs
+        todo_rows = []
+        
+        for i, todo_data in enumerate(self.temp_todos):
+            # Criar campos para este TODO
+            checkbox = ft.Checkbox(value=todo_data['completed'])
+            textfield = ft.TextField(
+                value=todo_data['description'],
+                hint_text="Digite a descrição do TODO...",
+                multiline=True,
+                min_lines=1,
+                max_lines=3,
+                expand=True
             )
+            delete_btn = ft.IconButton(
+                ft.Icons.DELETE,
+                icon_color=ft.Colors.RED,
+                disabled=len(self.temp_todos) <= 1
+            )
+            
+            # Definir handlers com closure correto
+            def make_checkbox_handler(index):
+                def handler(e):
+                    self.temp_todos[index]['completed'] = e.control.value
+                return handler
+            
+            def make_textfield_handler(index):
+                def handler(e):
+                    self.temp_todos[index]['description'] = e.control.value
+                return handler
+            
+            def make_delete_handler(index):
+                def handler(e):
+                    if len(self.temp_todos) > 1:
+                        self.temp_todos.pop(index)
+                        self.refresh_todo_dialog(item, item_id, colors)
+                return handler
+            
+            checkbox.on_change = make_checkbox_handler(i)
+            textfield.on_change = make_textfield_handler(i)
+            delete_btn.on_click = make_delete_handler(i)
+            
+            todo_row = ft.Row([
+                checkbox,
+                textfield,
+                delete_btn
+            ], alignment=ft.MainAxisAlignment.START, spacing=8)
+            
+            todo_rows.append(todo_row)
         
-        # Campo para novo todo
-        new_todo_field = ft.TextField(
-            label="Novo TODO",
-            hint_text="Digite a descrição do TODO",
-            expand=True
+        # Área de scroll com os TODOs
+        scroll_area = ft.Column(
+            todo_rows,
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+            height=300
         )
         
-        def add_todo(e):
-            description = new_todo_field.value.strip()
-            if description:
-                self.add_todo(item_id, description)
-                new_todo_field.value = ""
-                self.open_todo_dialog(item)  # Reabrir para atualizar a lista
+        # Botão de adicionar TODO
+        add_button = ft.ElevatedButton(
+            text="+ Adicionar TODO",
+            icon=ft.Icons.ADD,
+            on_click=add_new_todo_handler
+        )
         
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text(f"TODOs para: {item.get('Title', 'Item')}", size=18, weight=ft.FontWeight.BOLD),
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Column(todo_controls, spacing=8, scroll=ft.ScrollMode.AUTO),
-                    ft.Divider(),
-                    ft.Row([
-                        new_todo_field,
-                        ft.IconButton(
-                            ft.Icons.ADD,
-                            icon_size=24,
-                            icon_color=colors["accent"],
-                            on_click=add_todo,
-                            tooltip="Adicionar TODO"
-                        )
-                    ], spacing=8)
-                ], spacing=16, tight=True),
-                width=500,
-                height=400
+        # Conteúdo principal
+        content_column = ft.Column([
+            ft.Text(f"TODOs para: {item.get('Title', 'Item')}", size=16, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                content=scroll_area,
+                bgcolor=colors.get("surface", "#2d2d2d"),
+                padding=10,
+                border_radius=8
             ),
-            actions=[
-                ft.TextButton("Fechar", on_click=lambda e: self.close_todo_dialog())
-            ]
+            ft.Row([add_button], alignment=ft.MainAxisAlignment.CENTER),
+        ], spacing=16)
+        
+        # Botões de ação
+        action_buttons = [
+            ft.TextButton("Fechar", on_click=lambda e: self.close_todo_dialog()),
+            ft.ElevatedButton("Salvar", on_click=save_and_close_handler)
+        ]
+        
+        # Criar diálogo
+        self.todo_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                f"Gerenciar TODOs - {item.get('Title', 'Item')}", 
+                size=18, 
+                weight=ft.FontWeight.BOLD
+            ),
+            content=ft.Container(
+                content=content_column, 
+                width=600, 
+                height=450
+            ),
+            actions=action_buttons,
+            actions_alignment=ft.MainAxisAlignment.END
         )
         
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
+        try:
+            self.page.open(self.todo_dialog)
+        except Exception as e:
+            print(f"Erro ao abrir diálogo: {e}")
+            import traceback
+            traceback.print_exc()
 
-    def get_todos_for_item(self, item_id):
-        """Busca todos os TODOs para um item específico"""
-        import sqlite3
-        conn = sqlite3.connect('vpcr_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT id, description, completed FROM todos WHERE item_id = ? ORDER BY created_at', (item_id,))
-        todos = [{'id': row[0], 'description': row[1], 'completed': bool(row[2])} for row in cursor.fetchall()]
-        
-        conn.close()
-        return todos
-
-    def add_todo(self, item_id, description):
-        """Adiciona um novo TODO"""
-        import sqlite3
-        conn = sqlite3.connect('vpcr_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('INSERT INTO todos (item_id, description) VALUES (?, ?)', (item_id, description))
-        conn.commit()
-        conn.close()
-
-    def toggle_todo(self, todo_id):
-        """Alterna o status de conclusão de um TODO"""
-        import sqlite3
-        conn = sqlite3.connect('vpcr_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('UPDATE todos SET completed = NOT completed WHERE id = ?', (todo_id,))
-        conn.commit()
-        conn.close()
-
-    def delete_todo(self, todo_id, item):
-        """Remove um TODO"""
-        import sqlite3
-        conn = sqlite3.connect('vpcr_database.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
-        conn.commit()
-        conn.close()
-        
-        # Reabrir o diálogo para atualizar
+    def handle_toggle_and_refresh(self, todo_id, item):
+        self.db_manager.toggle_todo(todo_id)
+        # Recarrega diálogo mantendo aberto
         self.open_todo_dialog(item)
 
     def close_todo_dialog(self):
         """Fecha o diálogo de TODOs"""
-        if self.page.dialog:
-            self.page.dialog.open = False
-            self.page.update()
+        try:
+            if hasattr(self, 'todo_dialog') and self.todo_dialog:
+                self.page.close(self.todo_dialog)
+        except Exception as e:
+            # Fallback method
+            if self.page.dialog:
+                self.page.dialog.open = False
+                self.page.update()
 
     def populate_filter_options(self):
         """Popula as opções dos filtros com chips de multiseleção"""
@@ -818,6 +1351,11 @@ class VPCRApp:
         for key in self.filter_selections.keys():
             self.filter_selections[key].clear()
             self.update_filter_display(key)
+        
+        # Reset do switch de TODOs ativos
+        self.show_only_active_todos = False
+        self.todos_filter_switch.value = False
+        
         self.filter_data()
 
     def update_filter_display(self, field_name):
@@ -1079,7 +1617,15 @@ class VPCRApp:
                     self.filter_status_chips,
                     self.filter_supplier_chips,
                     self.filter_requestor_chips,
-                    self.filter_continuity_chips
+                    self.filter_continuity_chips,
+                    # Switch de TODOs ativos na mesma linha
+                    ft.Container(
+                        content=self.todos_filter_switch,
+                        padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                        bgcolor=colors["field_bg"],
+                        border=ft.border.all(1, colors["field_border"]),
+                        border_radius=8,
+                    )
                 ], spacing=8, wrap=False, scroll=ft.ScrollMode.AUTO)
             ], spacing=8)
         ], spacing=10)
