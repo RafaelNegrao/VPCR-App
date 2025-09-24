@@ -871,61 +871,63 @@ class VPCRApp:
             bgcolor=colors["field_bg"],
             border_color=colors["field_border"],
             expand=True,
+            multiline=True,
+            min_lines=10,
             on_change=lambda e: self._update_detail_field("Title", e.control.value)
         )
         
         self.tf_initiated = ft.TextField(
             value=self.detail_fields.get("Initiated Date", ""), 
-            label="Data de Início", 
+            label="Initiated Date", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
-            border_color=colors["field_border"], 
-            expand=True, 
-            height=36, 
+            border_color=colors["field_border"],
+            height=40,
+            expand=True,  # Garante que se adapte horizontalmente
             on_change=lambda e: self._update_detail_field("Initiated Date", e.control.value)
         )
         
         self.tf_last_update = ft.TextField(
             value=self.detail_fields.get("Last Update", ""), 
-            label="Última Atualização", 
+            label="Last Update", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
-            border_color=colors["field_border"], 
-            expand=True, 
-            height=36, 
+            border_color=colors["field_border"],
+            height=40,
+            expand=True,  # Garante que se adapte horizontalmente
             on_change=lambda e: self._update_detail_field("Last Update", e.control.value)
         )
         
         self.tf_closed_date = ft.TextField(
             value=self.detail_fields.get("Closed Date", ""), 
-            label="Data de Fechamento", 
+            label="Closed Date", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
-            border_color=colors["field_border"], 
-            expand=True, 
-            height=36, 
+            border_color=colors["field_border"],
+            height=40,
+            expand=True,  # Garante que se adapte horizontalmente
             on_change=lambda e: self._update_detail_field("Closed Date", e.control.value)
         )
         
         self.tf_category = ft.TextField(
             value=self.detail_fields.get("Category", ""), 
-            label="Categoria", 
+            label="Category", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
-            border_color=colors["field_border"], 
-            expand=True, 
-            height=36, 
+            border_color=colors["field_border"],
+            height=40,
+            expand=True,  # Garante que se adapte horizontalmente
             on_change=lambda e: self._update_detail_field("Category", e.control.value)
         )
         
         self.tf_supplier = ft.TextField(
             value=self.detail_fields.get("Supplier", ""), 
-            label="Fornecedor", 
+            label="Supplier", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
-            border_color=colors["field_border"], 
-            expand=True, 
-            height=36, 
+            border_color=colors["field_border"],
+            height=40,
+            expand=True,  # Garante que se adapte horizontalmente
             on_change=lambda e: self._update_detail_field("Supplier", e.control.value)
         )
         
@@ -933,6 +935,7 @@ class VPCRApp:
             value=self.detail_fields.get("PNs", ""), 
             label="Part Numbers", 
             multiline=True, 
+            min_lines=15,  # Altura mínima menor para permitir melhor adaptação
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -942,8 +945,9 @@ class VPCRApp:
         
         self.tf_plants = ft.TextField(
             value=self.detail_fields.get("Plants Affected", ""), 
-            label="Plantas Afetadas", 
+            label="Affected Plants", 
             multiline=True, 
+            min_lines=15,  # Altura mínima menor para permitir melhor adaptação
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -958,8 +962,8 @@ class VPCRApp:
             text_style=ft.TextStyle(size=12, color=colors["field_text"]),
             bgcolor=colors["field_bg"],
             border_color=colors["field_border"],
-            expand=True,
-            height=36,
+            height=40,
+            expand=True,  # Garante que se adapte horizontalmente
             suffix=ft.IconButton(
                 icon=ft.Icons.OPEN_IN_NEW,
                 icon_size=16,
@@ -974,6 +978,7 @@ class VPCRApp:
             value=self.detail_fields.get("Comments", ""), 
             label="Comentários",
             multiline=True, 
+            min_lines=15,  # Altura mínima menor para permitir melhor adaptação
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -985,25 +990,33 @@ class VPCRApp:
         # Organizando os campos com expansão específica
         overview_controls = [
             # Title - expansível
-            ft.Container(content=self.tf_title, expand=True),
+            ft.Container(content=self.tf_title, expand=1),
             # Datas - altura fixa
-            ft.Row([self.tf_initiated, self.tf_last_update], spacing=18),
-            ft.Row([self.tf_closed_date, self.tf_category], spacing=18),
-            # Fornecedor - altura fixa
-            self.tf_supplier,
-            # PNs e Plantas - expansíveis
             ft.Container(
-                content=ft.Row([self.tf_pns, self.tf_plants], spacing=18),
-                expand=True
+                content=ft.Row([self.tf_initiated, self.tf_last_update], spacing=8)
+            ),
+            ft.Container(
+                content=ft.Row([self.tf_closed_date, self.tf_category], spacing=8)
+            ),
+            # Fornecedor - altura fixa
+            ft.Container(
+                content=self.tf_supplier
+            ),
+            # PNs e Plantas - expansíveis (sem altura fixa)
+            ft.Container(
+                content=ft.Row([self.tf_pns, self.tf_plants], spacing=8),
+                expand=3  # Maior fator de expansão para campos expansíveis
             ),
             # Link - altura fixa
-            self.tf_link,
-            # Comentários - expansível
-            ft.Container(content=self.tf_comments, expand=True)
+            ft.Container(
+                content=self.tf_link
+            ),
+            # Comentários - expansível (sem altura fixa)
+            ft.Container(content=self.tf_comments, expand=3)  # Maior fator de expansão
         ]
 
         self.detail_overview = ft.Container(
-            content=ft.Column(overview_controls, spacing=8, expand=True),
+            content=ft.Column(overview_controls, spacing=20, expand=True),
             bgcolor=colors["secondary"],
             padding=12,
             border_radius=8,
@@ -1013,7 +1026,7 @@ class VPCRApp:
         # Request & Responsibility - TextFields compactos com labels em português
         self.tf_requestor = ft.TextField(
             value=self.detail_fields.get("Requestor", ""), 
-            label="Solicitante", 
+            label="Requestor", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -1046,7 +1059,7 @@ class VPCRApp:
         
         self.tf_continuity = ft.TextField(
             value=self.detail_fields.get("Continuity", ""), 
-            label="Continuidade", 
+            label="Continuity", 
             text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -1160,22 +1173,89 @@ class VPCRApp:
             expand=True  # Log expandirá para ocupar a largura disponível
         )
 
-        # Layout final: Overview ocupa toda altura, Request/Documentation/Log na lateral direita
+        # Linha de Status com ícones e texto abaixo
+        status_items = [
+            ("Draft", True),
+            ("Preliminary Change\nManager Review", True),
+            ("Preliminary\nReview", True), 
+            ("Cross Functional\nReview", False),
+            ("Secondary Change\nManager Review", False),
+            ("Pending Resource\nAssignment", False),
+            ("Cost and Lead Time\nAnalysis", False),
+            ("Engineering\nWork in Progress", False),
+            ("Purchasing\nWork in Progress", False),
+            ("Pending Plant\nImplementation", False),
+            ("Work\nComplete", False)
+        ]
+        
+        # Criar ícones para cada status
+        status_icons = []
+        for status_text, is_completed in status_items:
+            # Texto exibido: remover quebras manuais e deixar o wrap natural em até 2 linhas
+            display_text = status_text.replace("\n", " ")
+            # Ícone de status
+            icon = ft.Icon(
+                ft.Icons.CHECK_CIRCLE if is_completed else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                color=ft.Colors.GREEN if is_completed else colors["text_container_secondary"],
+                size=22  # ligeiramente menor para reduzir altura total
+            )
+
+            status_icons.append(
+                ft.Container(
+                    content=ft.Column([
+                        icon,
+                        ft.Container(
+                            content=ft.Text(
+                                display_text,
+                                size=9,
+                                color=colors["text_container_primary"],
+                                text_align=ft.TextAlign.CENTER,
+                                max_lines=2,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                tooltip=status_text
+                            ),
+                            height=28,  # altura aproximada para 2 linhas de fonte size=9
+                            alignment=ft.alignment.center
+                        )
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+                    padding=ft.padding.symmetric(horizontal=4, vertical=2),
+                    alignment=ft.alignment.center,
+                    expand=True
+                )
+            )
+
+        # Container da linha de status agora sem expand para abraçar o conteúdo (altura mínima)
+        status_line = ft.Container(
+            content=ft.Row(
+                controls=status_icons,
+                spacing=8,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            ),
+            bgcolor=colors["secondary"],
+            padding=6,  # Reduzido de 12 para 6
+            border_radius=8,
+            margin=ft.margin.only(bottom=10)
+        )
+
+        # Layout final: Status line acima, depois Overview ocupa toda altura, Request/Documentation/Log na lateral direita
         main_content = ft.Container(
-            content=ft.Row([
-                left_top,  # Overview - toda altura
-                ft.Column([
-                    ft.Row([
-                        middle_top,  # Request & Responsibility
-                        right_top    # Documentation
-                    ], spacing=10, expand=True),
-                    ft.Container(
-                        content=self.detail_log,  # Log ocupará metade da altura
-                        expand=True,  # Permite que o Log se expanda verticalmente
-                        padding=ft.padding.all(10)
-                    )
-                ], spacing=10, expand=True)
-            ], spacing=15, expand=True),
+            content=ft.Column([
+                status_line,  # Linha de status no topo
+                ft.Row([
+                    left_top,  # Overview - toda altura
+                    ft.Column([
+                        ft.Row([
+                            middle_top,  # Request & Responsibility
+                            right_top    # Documentation
+                        ], spacing=10, expand=True),
+                        ft.Container(
+                            content=self.detail_log,  # Log ocupará metade da altura
+                            expand=True,  # Permite que o Log se expanda verticalmente
+                            padding=ft.padding.all(10)
+                        )
+                    ], spacing=10, expand=True)
+                ], spacing=15, expand=True)
+            ], spacing=0, expand=True),
             expand=True,
             alignment=ft.alignment.top_left
         )
