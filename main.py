@@ -599,6 +599,9 @@ class VPCRApp:
         self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
         # Carregar configuração persistida de campos visíveis (se existir)
         self.load_visible_fields()
+        # Estado para seleção/exportação de cards
+        self.card_select_mode = False
+        self.card_selection = set()  # IDs selecionados para exportação
         
         # Campos detalhados (valores mostrados no painel direito)
         # Inicializar com valores de exemplo; chaves seguem os rótulos originais
@@ -1044,6 +1047,7 @@ class VPCRApp:
     def create_card(self, item):
         """Cria um card para um item"""
         colors = self.theme_manager.get_theme_colors()
+        base_font = getattr(self.theme_manager, 'font_size', 14)
         # obter status e cor do status
         status_val = item.get("Status", "")
         status_color = {
@@ -1062,12 +1066,12 @@ class VPCRApp:
         # primeira linha: mostrar Title e, se presente, o badge de Status
         title_text = item.get("Title", "")
         first_row_controls = [
-            ft.Text(title_text, size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"], expand=True)
+            ft.Text(title_text, size=base_font + 2, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"], expand=True)
         ]
         if "Status" in self.visible_fields:
             first_row_controls.append(
                 ft.Container(
-                    content=ft.Text(status_val, size=12, color=ft.Colors.WHITE),
+                    content=ft.Text(status_val, size=base_font + 1, color=ft.Colors.WHITE),
                     bgcolor=status_color,
                     padding=ft.padding.symmetric(horizontal=8, vertical=2),
                     border_radius=10
@@ -1078,7 +1082,7 @@ class VPCRApp:
 
         # Adicionar linha "Title:" abaixo do título se Title estiver nos campos visíveis
         if "Title" in self.visible_fields:
-            rows.append(ft.Row([ft.Text("Title:", size=12, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(title_text, size=12, color=colors["text_container_secondary"])], spacing=8))
+            rows.append(ft.Row([ft.Text("Title:", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(title_text, size=base_font, color=colors["text_container_secondary"])], spacing=8))
 
         # outras fields (excluir Title já mostrado)
         for f in self.visible_fields:
@@ -1086,7 +1090,7 @@ class VPCRApp:
                 continue
             val = item.get(f, "")
             if val != "":
-                rows.append(ft.Row([ft.Text(f + ":", size=12, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(str(val), size=12, color=colors["text_container_secondary"])], spacing=8))
+                rows.append(ft.Row([ft.Text(f + ":", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(str(val), size=base_font, color=colors["text_container_secondary"])], spacing=8))
 
         # Adicionar linha com o ícone de notificação (antes de instanciar container principal)
         def handle_notification_click(e, current_item=item):
@@ -1135,8 +1139,19 @@ class VPCRApp:
 
         # Container principal do card (agora inclui a linha do sino)
         column = ft.Column(rows, spacing=6)
+
+        # Se estivermos em modo de seleção, mostrar checkbox à esquerda
+        if getattr(self, 'card_select_mode', False):
+            item_id = item.get("ID")
+            checked = item_id in self.card_selection
+            checkbox = ft.Checkbox(value=checked, on_change=lambda e, iid=item_id: self._handle_card_checkbox_change(e, iid))
+            # Colocar checkbox e conteúdo em uma linha para manter layout
+            content = ft.Row([checkbox, ft.Container(width=8), column], alignment=ft.MainAxisAlignment.START)
+        else:
+            content = column
+
         card_container = ft.Container(
-            content=column,
+            content=content,
             padding=15,
             on_click=lambda e: self.select_item(item)
         )
@@ -1171,6 +1186,113 @@ class VPCRApp:
                     pass  # O create_card já fará isso automaticamente
                     
             self.card_list.update()
+
+    def _handle_card_checkbox_change(self, e, item_id):
+        """Handler chamado quando um checkbox de card muda de estado"""
+        try:
+            if e.control.value:
+                self.card_selection.add(item_id)
+            else:
+                if item_id in self.card_selection:
+                    self.card_selection.remove(item_id)
+        except Exception:
+            # Em caso de erro, tentar ler o valor do evento
+            try:
+                if getattr(e, 'data', None) in (True, 'true', 'True'):
+                    self.card_selection.add(item_id)
+                else:
+                    if item_id in self.card_selection:
+                        self.card_selection.remove(item_id)
+            except Exception:
+                pass
+        # Atualizar contador no footer
+        self._update_card_export_footer()
+
+    def toggle_card_select_mode(self):
+        """Ativa/desativa o modo de seleção de cards"""
+        self.card_select_mode = not getattr(self, 'card_select_mode', False)
+        # Limpar seleção ao entrar em modo ou sair (escolha de UX)
+        if not self.card_select_mode:
+            self.card_selection.clear()
+        # Atualizar footer visibilidade
+        if hasattr(self, 'card_export_footer'):
+            self.card_export_footer.visible = self.card_select_mode
+        self._update_card_export_footer()
+        # Recriar a lista para exibir/ocultar checkboxes
+        self.update_card_list()
+
+    def cancel_card_selection(self):
+        """Cancela o modo de seleção e limpa seleção"""
+        self.card_select_mode = False
+        self.card_selection.clear()
+        if hasattr(self, 'card_export_footer'):
+            self.card_export_footer.visible = False
+        self._update_card_export_footer()
+        self.update_card_list()
+
+    def _update_card_export_footer(self):
+        """Atualiza o texto do footer com a contagem de itens selecionados"""
+        if hasattr(self, 'card_export_count_text'):
+            count = len(self.card_selection)
+            self.card_export_count_text.value = f"{count} selecionado{'s' if count != 1 else ''}"
+            try:
+                self.card_export_count_text.update()
+            except Exception:
+                pass
+
+    def export_selected_cards(self):
+        """Exporta os cards selecionados para CSV em %APPDATA%/VPCR App/exports"""
+        if not self.card_selection:
+            # mostrar mensagem
+            if hasattr(self, 'page'):
+                self.page.snack_bar = ft.SnackBar(content=ft.Text("Nenhum card selecionado para exportar."))
+                self.page.snack_bar.open = True
+                self.page.update()
+            return
+
+        # Reunir dados dos items selecionados
+        selected_items = [item for item in self.filtered_data if item.get('ID') in self.card_selection]
+        if not selected_items:
+            # fallback: procurar em todos os dados
+            selected_items = [item for item in self.sample_data if item.get('ID') in self.card_selection]
+
+        # Nome do arquivo
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            out_dir = os.path.join(appdata, 'VPCR App', 'exports')
+            os.makedirs(out_dir, exist_ok=True)
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            out_path = os.path.join(out_dir, f'vpcr_export_{timestamp}.csv')
+
+            # Determinar cabeçalho com base em visible_fields (ou todas as chaves do primeiro item)
+            headers = self.visible_fields if self.visible_fields else list(selected_items[0].keys())
+            # Garantir que ID esteja presente
+            if 'ID' not in headers:
+                headers = ['ID'] + headers
+
+            with open(out_path, 'w', encoding='utf-8') as f:
+                # escrever cabeçalho
+                f.write(','.join([h.replace(',', ' ') for h in headers]) + '\n')
+                for it in selected_items:
+                    row = []
+                    for h in headers:
+                        row.append(str(it.get(h, '')).replace(',', ' '))
+                    f.write(','.join(row) + '\n')
+
+            # Notificar sucesso
+            if hasattr(self, 'page'):
+                self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Exportado {len(selected_items)} item(s) para {out_path}"))
+                self.page.snack_bar.open = True
+                self.page.update()
+
+            # Sair do modo seleção
+            self.cancel_card_selection()
+        except Exception as e:
+            if hasattr(self, 'page'):
+                self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Erro ao exportar: {e}"))
+                self.page.snack_bar.open = True
+                self.page.update()
 
     def open_todo_dialog(self, item):
         """Abre o diálogo de gerenciamento de TODOs para um item"""
@@ -1902,7 +2024,9 @@ class VPCRApp:
                         tooltip="Importar",
                         on_click=lambda e: self.open_import_dialog()
                     ),
-                    ft.IconButton(icon=ft.Icons.DELETE_SWEEP, tooltip="Limpar filtros", on_click=self.clear_all_filters)
+                    ft.IconButton(icon=ft.Icons.DELETE_SWEEP, tooltip="Limpar filtros", on_click=self.clear_all_filters),
+                    # Botão para ativar modo de seleção para exportar cards
+                    ft.IconButton(icon=ft.Icons.FILE_PRESENT, tooltip="Selecionar cards para exportar", on_click=lambda e: self.toggle_card_select_mode())
                 ], spacing=6)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Column([
@@ -1940,6 +2064,20 @@ class VPCRApp:
                 offset=ft.Offset(0, 2)
             )
         )
+        # Criar os controles de footer fora da expressão do Column para evitar erros de sintaxe
+        self.card_export_count_text = ft.Text("", size=14, weight=ft.FontWeight.BOLD)
+        self.card_export_footer = ft.Container(
+            content=ft.Row([
+                self.card_export_count_text,
+                ft.Container(expand=True),
+                ft.TextButton("Cancelar", on_click=lambda e: self.cancel_card_selection()),
+                ft.ElevatedButton("Exportar", on_click=lambda e: self.export_selected_cards())
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor=colors["secondary"],
+            padding=10,
+            border_radius=8,
+            visible=False
+        )
 
         left_column = ft.Container(
             content=ft.Column([
@@ -1949,7 +2087,9 @@ class VPCRApp:
                     content=self.card_list,
                     border_radius=10,
                     expand=True
-                )
+                ),
+                # Footer para exportação em modo seleção de cards (referenciado em self)
+                self.card_export_footer
             ], expand=True, tight=True),
             width=400,  # Largura fixa mais estreita para a coluna esquerda
             alignment=ft.alignment.top_left
@@ -1965,7 +2105,7 @@ class VPCRApp:
             border_color=colors["field_border"],
             expand=True,
             multiline=True,
-            min_lines=10,
+            min_lines=15,
             read_only=True
         )
         
@@ -2028,7 +2168,7 @@ class VPCRApp:
             value=self.detail_fields.get("PNs", ""), 
             label="Part Numbers", 
             multiline=True, 
-            min_lines=15,  # Altura mínima menor para permitir melhor adaptação
+            min_lines=5,  # Altura mínima menor para permitir melhor adaptação
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -2040,7 +2180,7 @@ class VPCRApp:
             value=self.detail_fields.get("Plants Affected", ""), 
             label="Affected Plants", 
             multiline=True, 
-            min_lines=15,  # Altura mínima menor para permitir melhor adaptação
+            min_lines=5,  # Altura mínima menor para permitir melhor adaptação
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -2071,7 +2211,7 @@ class VPCRApp:
             value=self.detail_fields.get("Comments", ""), 
             label="Comentários",
             multiline=True, 
-            min_lines=15,  # Altura mínima menor para permitir melhor adaptação
+            min_lines=10,  # Altura mínima menor para permitir melhor adaptação
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
@@ -2082,8 +2222,8 @@ class VPCRApp:
         # Mais espaçamento entre campos (spacing aumentado)
         # Organizando os campos com expansão específica
         overview_controls = [
-            # Title - expansível
-            ft.Container(content=self.tf_title, expand=1),
+            # Title - expansível (maior fator para empurrar campos abaixo)
+            ft.Container(content=self.tf_title, expand=4),
             # Datas - altura fixa
             ft.Container(
                 content=ft.Row([self.tf_initiated, self.tf_last_update], spacing=8)
