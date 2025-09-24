@@ -814,30 +814,132 @@ class VPCRApp:
         # Adicionar o painel dropdown ao overlay da página para ficar suspenso
         self.page.overlay.append(self.dropdown_panel_container)
         
-        # Layout principal
-        self.page.add(
-            ft.Container(
-                content=ft.Tabs(
-                    tabs=[
-                        ft.Tab(
-                            text="VPCR",
-                            content=self.create_vpcr_tab()
-                        ),
-                        ft.Tab(
-                            text="Settings",
-                            content=self.create_settings_tab()
-                        )
-                    ],
-                    selected_index=0,
-                    animation_duration=300,
-                    label_color=self.theme_manager.get_theme_colors()["accent"],
-                    indicator_color=self.theme_manager.get_theme_colors()["accent"]
-                ),
-                bgcolor=self.theme_manager.get_theme_colors()["primary"],
-                expand=True,
-                padding=10
-            )
+        # Área de notificação simples (SnackBar custom minimalista)
+        self._notification_text = ft.Text("", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
+        self._notification_bar = ft.Container(
+            content=ft.Row([
+                self._notification_text,
+                ft.IconButton(icon=ft.Icons.CLOSE, icon_color=ft.Colors.WHITE, tooltip="Fechar", on_click=lambda e: self.hide_notification())
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            visible=False,
+            bgcolor=ft.Colors.BLUE_600,
+            padding=10,
+            border_radius=8
         )
+
+        # Guardar referência do timeout para cancelar se necessário
+        self._notification_timer = None
+
+        # Função interna para criar tabs (facilita futura reorganização)
+        tabs_control = ft.Tabs(
+            tabs=[
+                ft.Tab(text="VPCR", content=self.create_vpcr_tab()),
+                ft.Tab(text="Settings", content=self.create_settings_tab())
+            ],
+            selected_index=0,
+            animation_duration=300,
+            label_color=self.theme_manager.get_theme_colors()["accent"],
+            indicator_color=self.theme_manager.get_theme_colors()["accent"]
+        )
+
+        # Ajustar barra para overlay (remover visibilidade de layout)
+        self._notification_bar.visible = False
+        self._notification_bar.padding = 12
+        self._notification_bar.margin = 0
+        self._notification_bar.width = 420
+
+        # Definir coordenadas absolutas diretamente (Stack aceita top/right nos filhos)
+        self._notification_bar.top = 12
+        self._notification_bar.right = 12
+
+        self._overlay_stack = ft.Stack(
+            controls=[
+                ft.Container(
+                    content=tabs_control,
+                    bgcolor=self.theme_manager.get_theme_colors()["primary"],
+                    expand=True,
+                    padding=10
+                ),
+                self._notification_bar
+            ],
+            expand=True,
+            clip_behavior=ft.ClipBehavior.NONE
+        )
+
+        self.page.add(self._overlay_stack)
+
+    def notify(self, message: str, kind: str = "info", auto_hide: int = 3000):
+        """Exibe uma notificação simples no topo.
+        kind: info | success | error | warn
+        auto_hide: ms (0 = não esconder automaticamente)
+        """
+        color_map = {
+            "info": ft.Colors.BLUE_600,
+            "success": ft.Colors.GREEN_600,
+            "error": ft.Colors.RED_600,
+            "warn": ft.Colors.ORANGE_600
+        }
+        bgcolor = color_map.get(kind, ft.Colors.BLUE_600)
+        print(f"[NOTIFY] kind={kind} msg={message}")
+        try:
+            self._notification_text.value = message
+            self._notification_bar.bgcolor = bgcolor
+            self._notification_bar.visible = True
+            # Garantir que o container de notificação está no Stack (último para ficar por cima)
+            if self._notification_bar not in self._overlay_stack.controls:
+                self._overlay_stack.controls.append(self._notification_bar)
+            else:
+                # mover para topo se não for último
+                idx = self._overlay_stack.controls.index(self._notification_bar)
+                if idx != len(self._overlay_stack.controls) - 1:
+                    self._overlay_stack.controls.pop(idx)
+                    self._overlay_stack.controls.append(self._notification_bar)
+            self._overlay_stack.update()
+            if self.page:
+                self.page.update()
+        except Exception as e:
+            print(f"Falha ao exibir notificação: {e}")
+
+        # Cancelar timer anterior
+        if self._notification_timer:
+            try:
+                self._notification_timer.cancel()
+            except Exception:
+                pass
+            self._notification_timer = None
+
+        if auto_hide and auto_hide > 0:
+            import threading
+            def hide_later():
+                import time
+                time.sleep(auto_hide/1000)
+                self.hide_notification()
+            self._notification_timer = threading.Thread(target=hide_later, daemon=True)
+            self._notification_timer.start()
+
+    def hide_notification(self):
+        """Esconde a notificação se visível"""
+        try:
+            if self._notification_bar.visible:
+                self._notification_bar.visible = False
+                # Manter espaço zero (não empurra layout por ser overlay)
+                if self.page:
+                    self._notification_bar.update()
+                    self.page.update()
+        except Exception as e:
+            print(f"Erro ao esconder notificação: {e}")
+
+    # Substituir métodos antigos chamando notify
+    def show_custom_notification(self, message, color=ft.Colors.BLUE_400, duration=3000):
+        # Compat: mapear cor básica para tipo
+        kind = "info"
+        if color == ft.Colors.GREEN_500:
+            kind = "success"
+        elif color == ft.Colors.RED_500:
+            kind = "error"
+        elif color == ft.Colors.ORANGE_500:
+            kind = "warn"
+        self.notify(message, kind=kind, auto_hide=duration)
     
     def apply_theme(self):
         """Aplica o tema atual à página"""
@@ -1048,6 +1150,11 @@ class VPCRApp:
         """Cria um card para um item"""
         colors = self.theme_manager.get_theme_colors()
         base_font = getattr(self.theme_manager, 'font_size', 14)
+        # Inicializar estruturas de estado para tracking de alterações se ainda não existirem
+        if not hasattr(self, 'dirty_items'):
+            self.dirty_items = set()  # IDs de items modificados e não salvos
+        if not hasattr(self, 'card_save_buttons'):
+            self.card_save_buttons = {}  # item_id -> referência de botão salvar
         # obter status e cor do status
         status_val = item.get("Status", "")
         status_color = {
@@ -1094,7 +1201,7 @@ class VPCRApp:
 
         # Adicionar linha com o ícone de notificação (antes de instanciar container principal)
         def handle_notification_click(e, current_item=item):
-            print(f"DEBUG: Clique no sino para item ID={current_item.get('ID')} Title={current_item.get('Title')}")
+            # Abre o diálogo de TODOs para o item selecionado
             self.open_todo_dialog(current_item)
 
         # Verificar se existe TODOs para este item
@@ -1130,11 +1237,30 @@ class VPCRApp:
                 # Se já estava animando, apenas atualizar a referência do botão
                 self.animated_icons[item_id] = notification_button
 
+        # Botão de salvar (fica à esquerda do sino). Cor muda se item estiver "sujo".
+        item_id = item.get("ID")
+        is_dirty = item_id in self.dirty_items
+        save_color = (ft.Colors.ORANGE_400 if is_dirty else colors["accent"]) if hasattr(ft.Colors, 'ORANGE_400') else (colors["accent"])
+
+        def handle_save_click(e, current_item=item):
+            self.save_card_changes(current_item)
+
+        save_button = ft.IconButton(
+            icon=ft.Icons.SAVE,
+            icon_size=24,
+            icon_color=save_color,
+            tooltip="Salvar alterações deste card",
+            on_click=handle_save_click,
+        )
+        # Guardar referência para atualizações futuras de cor
+        self.card_save_buttons[item_id] = save_button
+
         rows.append(
             ft.Row([
                 ft.Container(expand=True),  # Espaço vazio expansível
+                save_button,
                 notification_button
-            ], alignment=ft.MainAxisAlignment.END)
+            ], alignment=ft.MainAxisAlignment.END, spacing=8)
         )
 
         # Container principal do card (agora inclui a linha do sino)
@@ -1264,6 +1390,55 @@ class VPCRApp:
         if hasattr(self, 'page'):
             self.page.update()
 
+    def show_custom_notification(self, message, color=ft.Colors.BLUE_400, duration=3000):
+        """Cria uma notificação personalizada usando banner no topo"""
+        print(f"=== MOSTRANDO NOTIFICAÇÃO: {message} ===")
+        if hasattr(self, 'page') and self.page:
+            try:
+                # Limpar notificação anterior se existir
+                self.hide_custom_notification()
+                
+                # Criar banner simples
+                self.notification_banner = ft.Banner(
+                    bgcolor=color,
+                    content=ft.Text(message, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                    actions=[
+                        ft.TextButton("Fechar", style=ft.ButtonStyle(color=ft.Colors.WHITE), on_click=lambda e: self.hide_custom_notification())
+                    ]
+                )
+                
+                # Adicionar à página
+                self.page.banner = self.notification_banner
+                self.page.banner.open = True
+                self.page.update()
+                print("Banner de notificação criado")
+                
+                # Auto-remover após duração
+                if duration > 0:
+                    import threading
+                    def auto_hide():
+                        import time
+                        time.sleep(duration / 1000.0)
+                        self.hide_custom_notification()
+                    threading.Thread(target=auto_hide).start()
+                
+            except Exception as e:
+                print(f"Erro ao criar notificação: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def hide_custom_notification(self):
+        """Remove a notificação personalizada"""
+        try:
+            if hasattr(self, 'page') and hasattr(self.page, 'banner') and self.page.banner:
+                self.page.banner.open = False
+                self.page.update()
+                print("Banner de notificação removido")
+        except Exception as e:
+            print(f"Erro ao remover notificação: {e}")
+
+    # Métodos de teste removidos (test_snackbar, test_dialog) — limpeza de código legado
+
     def _update_card_export_footer(self):
         """Atualiza o texto do footer com a contagem de itens selecionados"""
         if hasattr(self, 'card_export_count_text'):
@@ -1278,10 +1453,8 @@ class VPCRApp:
         """Exporta os cards selecionados para PDF com seletor de arquivo"""        
         if not self.card_selection:
             # mostrar mensagem
-            if hasattr(self, 'page'):
-                self.page.snack_bar = ft.SnackBar(content=ft.Text("Nenhum card selecionado para exportar."))
-                self.page.snack_bar.open = True
-                self.page.update()
+            if hasattr(self, 'page') and self.page:
+                self.notify("⚠️ Nenhum card selecionado para exportar", kind="warn", auto_hide=3000)
             return
 
         # Abrir seletor de arquivo para PDF
@@ -1296,20 +1469,34 @@ class VPCRApp:
                     
                     self._generate_pdf_report(selected_items, e.path)
                     # Notificar sucesso
-                    if hasattr(self, 'page'):
-                        self.page.snack_bar = ft.SnackBar(content=ft.Text(f"PDF exportado com sucesso: {e.path}"))
-                        self.page.snack_bar.open = True
-                        self.page.update()
+                    if hasattr(self, 'page') and self.page:
+                        filename = os.path.basename(e.path)
+                        self.notify(f"✅ PDF exportado: {filename}", kind="success", auto_hide=4000)
                     # Sair do modo seleção
                     self.cancel_card_selection()
                     # Forçar atualização da interface
                     if hasattr(self, 'page'):
                         self.page.update()
                 except Exception as ex:
-                    if hasattr(self, 'page'):
-                        self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Erro ao gerar PDF: {ex}"))
-                        self.page.snack_bar.open = True
-                        self.page.update()
+                    import traceback
+                    error_details = traceback.format_exc()
+                    print(f"Erro detalhado ao gerar PDF: {error_details}")
+                    
+                    if hasattr(self, 'page') and self.page:
+                        # Mensagem de erro detalhada para debug
+                        error_msg = f"Erro ao gerar PDF: {str(ex)}"
+                        if "reportlab" in str(ex).lower():
+                            error_msg += "\n(Problema com biblioteca ReportLab no executável)"
+                        elif "icon" in str(ex).lower() or "image" in str(ex).lower():
+                            error_msg += "\n(Problema ao carregar ícone Cummins)"
+                        elif "font" in str(ex).lower():
+                            error_msg += "\n(Problema com fonte no executável)"
+                        elif "path" in str(ex).lower() or "file" in str(ex).lower():
+                            error_msg += "\n(Problema de caminho de arquivo)"
+                        
+                        self.notify(f"❌ {error_msg}", kind="error", auto_hide=6000)
+                    else:
+                        print("Page não está disponível para mostrar SnackBar")
 
         # Configurar e abrir seletor de arquivo
         if not hasattr(self, 'pdf_save_dialog'):
@@ -1331,17 +1518,23 @@ class VPCRApp:
 
     def _generate_pdf_report(self, selected_items, file_path):
         """Gera o relatório PDF com os items selecionados"""
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, Image, HRFlowable
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib import colors
-        from reportlab.lib.units import mm, inch
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.graphics.shapes import Drawing, Rect
-        from reportlab.platypus.flowables import HRFlowable
-        import datetime
-        import os
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether, Image, HRFlowable
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from reportlab.lib.units import mm, inch
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            from reportlab.graphics.shapes import Drawing, Rect
+            from reportlab.platypus.flowables import HRFlowable
+            import datetime
+            import os
+            import sys
+        except ImportError as e:
+            raise Exception(f"Erro ao importar bibliotecas ReportLab: {e}")
+        except Exception as e:
+            raise Exception(f"Erro geral ao carregar dependências: {e}")
         
         # Cores limpas e profissionais
         cummins_red = colors.Color(0.8, 0.1, 0.1)        # Vermelho Cummins
@@ -1436,11 +1629,29 @@ class VPCRApp:
         # Tentar carregar o ícone da Cummins
         cummins_logo = None
         try:
-            logo_path = os.path.join(os.path.dirname(__file__), "cummins.ico")
+            # Verificar se estamos executando como executável PyInstaller
+            if getattr(sys, 'frozen', False):
+                # Executável PyInstaller
+                logo_path = os.path.join(sys._MEIPASS, "cummins.ico")
+            else:
+                # Desenvolvimento normal
+                logo_path = os.path.join(os.path.dirname(__file__), "cummins.ico")
+            
             if os.path.exists(logo_path):
                 cummins_logo = Image(logo_path, width=12*mm, height=12*mm)
+                print(f"Logo Cummins carregado com sucesso de: {logo_path}")
+            else:
+                print(f"Arquivo de logo não encontrado em: {logo_path}")
+                
         except Exception as e:
             print(f"Erro ao carregar logo da Cummins: {e}")
+            # Re-raise para que seja capturado pelo tratamento principal
+            if "cannot identify image file" in str(e):
+                raise Exception(f"Arquivo de imagem Cummins corrompido ou inválido: {e}")
+            elif "No such file" in str(e):
+                raise Exception(f"Ícone Cummins não encontrado no executável: {e}")
+            else:
+                raise Exception(f"Erro desconhecido ao carregar ícone Cummins: {e}")
         
         # Criar conteúdo da célula vermelha: texto à esquerda e logo à direita
         if cummins_logo:
@@ -1466,7 +1677,26 @@ class VPCRApp:
             ['', header_content, '']
         ], colWidths=[50*mm, 200*mm, 50*mm])
         
-        header_table.setStyle(TableStyle([
+        def safe_apply_style(table_obj, style_cmds, context_desc=""):
+            """Aplica TableStyle ignorando comandos potencialmente incompatíveis no executável.
+            Se 'ROUNDEDCORNERS' causar erro (algumas versões do reportlab + build PyInstaller), remove e tenta novamente.
+            """
+            try:
+                table_obj.setStyle(TableStyle(style_cmds))
+            except Exception as ex:
+                msg = str(ex).lower()
+                if 'round' in msg and 'corner' in msg:
+                    # Filtrar comandos ROUNDEDCORNERS e tentar novamente
+                    filtered = [c for c in style_cmds if not (isinstance(c, tuple) and c and c[0] == 'ROUNDEDCORNERS')]
+                    try:
+                        table_obj.setStyle(TableStyle(filtered))
+                        print(f"[PDF] Removido ROUNDEDCORNERS em '{context_desc}' devido a incompatibilidade no executável.")
+                    except Exception as ex2:
+                        print(f"[PDF] Falha ao aplicar estilo filtrado em '{context_desc}': {ex2}")
+                else:
+                    print(f"[PDF] Erro ao aplicar estilo em '{context_desc}': {ex}")
+
+        safe_apply_style(header_table, [
             ('BACKGROUND', (1, 0), (1, 0), cummins_red),
             ('TEXTCOLOR', (1, 0), (1, 0), colors.white),
             ('ALIGN', (1, 0), (1, 0), 'LEFT'),
@@ -1477,7 +1707,7 @@ class VPCRApp:
             ('TOPPADDING', (1, 0), (1, 0), 15),
             ('LEFTPADDING', (1, 0), (1, 0), 15),
             ('ROUNDEDCORNERS', [5, 5, 5, 5]),
-        ]))
+        ], context_desc="header_table")
         
         story.append(header_table)
         story.append(Spacer(1, 15))
@@ -1529,7 +1759,7 @@ class VPCRApp:
             
             # Título do card com background colorido
             title_table = Table([[card_title]], colWidths=[260*mm])
-            title_table.setStyle(TableStyle([
+            safe_apply_style(title_table, [
                 ('BACKGROUND', (0, 0), (-1, -1), cummins_red),
                 ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
@@ -1540,9 +1770,8 @@ class VPCRApp:
                 ('RIGHTPADDING', (0, 0), (-1, -1), 15),
                 ('TOPPADDING', (0, 0), (-1, -1), 8),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 9),
-                # Bordas arredondadas apenas no topo, retas embaixo para conectar
                 ('ROUNDEDCORNERS', [8, 8, 0, 0]),
-            ]))
+            ], context_desc="title_table")
             card_elements.append(title_table)
             
             # Sem espaçamento para conectar diretamente com o status
@@ -1584,20 +1813,18 @@ class VPCRApp:
             workflow_visual_table = Table([status_cells], 
                                         colWidths=[260*mm / 11] * 11,
                                         rowHeights=[15*mm])
-            workflow_visual_table.setStyle(TableStyle([
+            safe_apply_style(workflow_visual_table, [
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('TOPPADDING', (0, 0), (-1, -1), 0),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
                 ('LEFTPADDING', (0, 0), (-1, -1), 1),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-                # Background branco
                 ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-                # Bordas apenas no topo e laterais (sem borda inferior para conectar)
                 ('LINEABOVE', (0, 0), (-1, 0), 1, medium_gray),
                 ('LINEBEFORE', (0, 0), (0, -1), 1, medium_gray),
                 ('LINEAFTER', (-1, 0), (-1, -1), 1, medium_gray),
-            ]))
+            ], context_desc="workflow_visual_table")
             
             # Adicionar a linha de status visual ao card
             card_elements.append(workflow_visual_table)
@@ -1667,24 +1894,19 @@ class VPCRApp:
                 
                 # Tabela principal do card
                 main_table = Table(section_data, colWidths=[60*mm, 70*mm, 60*mm, 70*mm])
-                main_table.setStyle(TableStyle([
-                    # Background alternado suave para melhor leitura
+                safe_apply_style(main_table, [
                     ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, light_gray] * 50),
-                    # Bordas sem o topo (para conectar com status)
                     ('GRID', (0, 0), (-1, -1), 0.5, medium_gray),
                     ('LINEBEFORE', (0, 0), (0, -1), 1, medium_gray),
                     ('LINEAFTER', (-1, 0), (-1, -1), 1, medium_gray),
                     ('LINEBELOW', (0, -1), (-1, -1), 1, medium_gray),
-                    # Alinhamento
                     ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                    # Padding
                     ('LEFTPADDING', (0, 0), (-1, -1), 8),
                     ('RIGHTPADDING', (0, 0), (-1, -1), 8),
                     ('TOPPADDING', (0, 0), (-1, -1), 4),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                    # Bordas: superior reta (conecta com status), inferior arredondada
                     ('ROUNDEDCORNERS', [0, 0, 8, 8]),
-                ]))
+                ], context_desc="main_table")
                 
 
                 
@@ -1693,32 +1915,46 @@ class VPCRApp:
             # Adicionar card completo como um grupo (mantém título, workflow e tabela juntos)
             story.append(KeepTogether(card_elements))
         
-        # Gerar PDF
-        doc.build(story)
+        # Gerar PDF com tratamento de erro robusto
+        try:
+            doc.build(story)
+            print(f"PDF gerado com sucesso: {file_path}")
+        except Exception as e:
+            print(f"Erro ao construir PDF: {e}")
+            if "Permission denied" in str(e):
+                raise Exception(f"Permissão negada para salvar PDF. Verifique se o arquivo não está aberto em outro programa: {e}")
+            elif "No space left" in str(e):
+                raise Exception(f"Espaço insuficiente no disco para salvar o PDF: {e}")
+            elif "reportlab" in str(e).lower():
+                if "round" in str(e).lower() and "corner" in str(e).lower():
+                    raise Exception(
+                        "Incompatibilidade com 'ROUNDEDCORNERS' no ReportLab dentro do executável. O código já tenta remover automaticamente. Rebuild sugerido com: "
+                        "--collect-data reportlab --collect-submodules reportlab. Detalhe: " + str(e)
+                    )
+                raise Exception(f"Erro interno da biblioteca ReportLab no executável: {e}. Sugestão: incluir '--collect-data reportlab --collect-submodules reportlab' no PyInstaller e testar em Python 3.12 se persistir.")
+            elif "font" in str(e).lower():
+                raise Exception(f"Erro com fonte no executável. Verifique se as fontes estão disponíveis: {e}")
+            else:
+                raise Exception(f"Erro desconhecido ao gerar PDF: {e}")
 
     def open_todo_dialog(self, item):
         """Abre o diálogo de gerenciamento de TODOs para um item"""
         if not item:
-            print("DEBUG: open_todo_dialog chamado com item=None")
+            # Item inválido, nada a fazer
             return
         
-        print(f"DEBUG: open_todo_dialog iniciado para item: {item.get('Title', 'Item')}")
         colors = self.theme_manager.get_theme_colors()
         item_id = item.get("ID") or item.get("id")
-        print(f"DEBUG: item_id detectado = {item_id}")
         
         if item_id is None:
-            print("DEBUG: item sem ID válido. Abortando diálogo.")
             return
         
         try:
-            print("DEBUG: Iniciando carregamento dos TODOs...")
             # Lista temporária para armazenar TODOs durante a edição
             self.temp_todos = []
             
             # Carregar TODOs existentes do banco
             existing_todos = self.db_manager.get_todos_for_item(item_id)
-            print(f"DEBUG: {len(existing_todos)} TODOs encontrados no banco")
             for todo in existing_todos:
                 self.temp_todos.append({
                     'id': todo['id'],
@@ -1735,9 +1971,7 @@ class VPCRApp:
                     'completed': False,
                     'is_existing': False
                 })
-                print("DEBUG: Adicionado TODO vazio inicial")
             
-            print("DEBUG: Definindo funções internas...")
             def create_todo_row(todo_data, index):
                 """Cria uma linha de TODO com checkbox e campo de texto"""
                 def on_checkbox_change(e):
@@ -1819,14 +2053,12 @@ class VPCRApp:
                                     self.db_manager.update_todo(new_id, completed=True)
                     
                     self.close_todo_dialog()
-                    print("TODOs salvos com sucesso!")
+                    # TODOs salvos
                     
                 except Exception as ex:
                     print(f"Erro ao salvar TODOs: {ex}")
             
-            print("DEBUG: Chamando refresh_todo_dialog...")
             self.refresh_todo_dialog(item, item_id, colors, save_and_close, add_new_todo)
-            print("DEBUG: open_todo_dialog concluído com sucesso")
             
         except Exception as ex:
             import traceback
@@ -1951,11 +2183,19 @@ class VPCRApp:
         )
         
         # Conteúdo principal
+        # Definiremos a cor de fundo uniforme (igual ao diálogo)
+        uniform_bg = colors.get("secondary", colors.get("surface", "#2d2d2d"))
+
         content_column = ft.Column([
-            ft.Text(f"TODOs para: {item.get('Title', 'Item')}", size=16, weight=ft.FontWeight.BOLD),
+            ft.Text(
+                f"TODOs para: {item.get('Title', 'Item')}",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=colors.get("text_container_primary", ft.Colors.WHITE)
+            ),
             ft.Container(
                 content=scroll_area,
-                bgcolor=colors.get("surface", "#2d2d2d"),
+                bgcolor=uniform_bg,
                 padding=10,
                 border_radius=8
             ),
@@ -1968,22 +2208,38 @@ class VPCRApp:
             ft.ElevatedButton("Salvar", on_click=save_and_close_handler)
         ]
         
-        # Criar diálogo
+        # Criar diálogo (aplicar cores do tema)
+        dialog_bg = colors.get("secondary", "#2d2d2d")
+        surface_bg = colors.get("surface", dialog_bg)
+
+        # Ajustar o container principal de conteúdo para refletir o tema
+        themed_content_container = ft.Container(
+            content=content_column,
+            width=600,
+            height=450,
+            bgcolor=dialog_bg,
+            padding=12,
+            border_radius=10
+        )
+
         self.todo_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(
-                f"Gerenciar TODOs - {item.get('Title', 'Item')}", 
-                size=18, 
-                weight=ft.FontWeight.BOLD
+                f"Gerenciar TODOs - {item.get('Title', 'Item')}",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=colors.get("text_container_primary", ft.Colors.WHITE)
             ),
-            content=ft.Container(
-                content=content_column, 
-                width=600, 
-                height=450
-            ),
+            content=themed_content_container,
             actions=action_buttons,
             actions_alignment=ft.MainAxisAlignment.END
         )
+
+        # Tentar definir bgcolor diretamente (nem sempre disponível em todas versões)
+        try:
+            self.todo_dialog.bgcolor = dialog_bg
+        except Exception:
+            pass
         
         try:
             self.page.open(self.todo_dialog)
@@ -2364,6 +2620,64 @@ class VPCRApp:
     def _update_detail_field(self, field_name: str, value: str):
         """Atualiza o dicionário detail_fields quando um campo editável muda."""
         self.detail_fields[field_name] = value
+        # Marcar item atual como "sujo" e atualizar botão salvar correspondente
+        if hasattr(self, 'selected_item') and self.selected_item:
+            item_id = self.selected_item.get("ID")
+            if item_id is not None:
+                if not hasattr(self, 'dirty_items'):
+                    self.dirty_items = set()
+                self.dirty_items.add(item_id)
+                # Atualizar cor do botão de salvar se existir
+                if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
+                    btn = self.card_save_buttons[item_id]
+                    try:
+                        btn.icon_color = ft.Colors.ORANGE_400 if hasattr(ft.Colors, 'ORANGE_400') else ft.Colors.ORANGE
+                        btn.tooltip = "Alterações não salvas"
+                        btn.update()
+                    except Exception:
+                        pass
+
+    def save_card_changes(self, item):
+        """Persiste alterações editáveis do card selecionado e reseta estado sujo.
+        (Assumindo que sample_data contém os dicionários base.)
+        """
+        try:
+            if not item:
+                return
+            item_id = item.get("ID")
+            if item_id is None:
+                return
+            # Encontrar item base em sample_data
+            for base in self.sample_data:
+                if base.get("ID") == item_id:
+                    # Atualizar campos conhecidos a partir de detail_fields
+                    editable_fields = [
+                        "Comments", "Continuity", "Link"
+                    ]  # Expandir aqui se mais campos ficarem editáveis
+                    for f in editable_fields:
+                        if f in self.detail_fields:
+                            base[f] = self.detail_fields[f]
+                    break
+            # Remover do conjunto de sujos
+            if hasattr(self, 'dirty_items') and item_id in self.dirty_items:
+                self.dirty_items.remove(item_id)
+            # Atualizar botão salvar
+            if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
+                btn = self.card_save_buttons[item_id]
+                btn.icon_color = self.theme_manager.get_theme_colors()["accent"]
+                btn.tooltip = "Salvar alterações deste card"
+                try:
+                    btn.update()
+                except Exception:
+                    pass
+            # Feedback visual
+            if hasattr(self, 'notify'):
+                self.notify(f"✅ Card {item_id} salvo", kind="success", auto_hide=2500)
+        except Exception as ex:
+            if hasattr(self, 'notify'):
+                self.notify(f"❌ Erro ao salvar card: {ex}", kind="error")
+            else:
+                print("Erro ao salvar card:", ex)
 
     def _open_link(self):
         """Abre o link em uma nova janela do navegador"""

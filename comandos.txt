@@ -1,12 +1,5 @@
 
 
-REM Gerar executável incluindo também o arquivo cummins.ico para uso interno (ex: PDF)
-py -3.13 -m pyinstaller --onefile --windowed ^
-	--icon="process.ico" ^
-	--add-data "cummins.ico;." ^
-	--name "VPCR Tracker app" main.py
 
-REM Observação:
-REM  --add-data "cummins.ico;."  -> (formato Windows) copia cummins.ico para o diretório raiz temporário
-REM  extraído pelo executável (sys._MEIPASS). No código pode acessar usando lógica que pega
-REM  o diretório de __file__ ou usando uma função resource_path.
+REM Uso correto do nome do módulo (PyInstaller com P maiúsculo) para evitar erro 'No module named pyinstaller'
+py -3.13 -m PyInstaller --onefile --windowed --icon="process.ico" --add-data "cummins.ico;." --name "VPCR Tracker app" main.py
