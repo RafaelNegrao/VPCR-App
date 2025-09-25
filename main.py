@@ -76,12 +76,51 @@ class FileImportManager:
         colors = self.app.theme_manager.get_theme_colors()
 
         def close_window(e=None):
+            # Limpar arquivos selecionados ao fechar
+            self.validated_files.clear()
+            
+            # Limpar e atualizar a listagem de arquivos
+            if self.files_list_container:
+                self._update_files_listing()
+            
+            # Limpar containers de dados e deselecionar card
+            try:
+                self.app.selected_item = None
+                self.app.selected_item_id = None
+                
+                # Limpar campos de detalhes
+                if hasattr(self.app, 'detail_fields'):
+                    for key in self.app.detail_fields:
+                        self.app.detail_fields[key] = ""
+                
+                # Atualizar containers de detalhes para mostrar campos vazios (de forma segura)
+                try:
+                    self.app.update_overview_container()
+                    self.app.update_request_container()
+                    self.app.update_doc_container()
+                    self.app.update_l2_containers()
+                except Exception:
+                    pass
+                
+                # Atualizar seleção dos cards (remover seleção visual)
+                try:
+                    self.app.update_card_selection_only()
+                except Exception:
+                    pass
+                    
+            except Exception:
+                pass
+            
+            # Fechar dialog
             try:
                 self.app.page.close(self.import_dialog)
             except Exception:
-                if self.app.page.dialog:
-                    self.app.page.dialog.open = False
-                    self.app.page.update()
+                try:
+                    if self.app.page.dialog:
+                        self.app.page.dialog.open = False
+                        self.app.page.update()
+                except Exception:
+                    pass
 
         def select_files(e):
             self.open_file_dialog()
@@ -93,7 +132,9 @@ class FileImportManager:
         self.files_list_container = ft.Container(
             content=ft.Column([], spacing=10, scroll=ft.ScrollMode.AUTO),
             height=240,
-            bgcolor=colors['secondary'],
+            width=None,  # Largura máxima disponível
+            expand=True,  # Expandir para usar toda largura disponível
+            bgcolor=ft.Colors.TRANSPARENT,  # Fundo transparente
             padding=10,
             border_radius=10
         )
@@ -204,9 +245,23 @@ class FileImportManager:
         """Valida lista de arquivos de forma síncrona adicionando aos existentes.
         Evita duplicar caminhos já validados anteriormente."""
         existing_paths = {f['path'] for f in self.validated_files}
+        existing_names = {os.path.basename(f['path']).lower() for f in self.validated_files}
+        
         for path in paths:
-            if path not in existing_paths:
-                self.validated_files.append(self._validate_file(path))
+            file_name = os.path.basename(path).lower()
+            
+            if path in existing_paths:
+                continue  # Arquivo já adicionado pelo caminho completo
+            
+            if file_name in existing_names:
+                # Mostrar erro para arquivo com nome duplicado
+                self.app.show_custom_notification(
+                    f"Arquivo '{os.path.basename(path)}' já foi selecionado!", 
+                    color=ft.Colors.ORANGE_400
+                )
+                continue
+            
+            self.validated_files.append(self._validate_file(path))
 
     def _validate_file(self, path: str) -> Dict:
         header_ok = False
@@ -261,19 +316,27 @@ class FileImportManager:
                 def make_remove(path):
                     return lambda e: self.remove_file(path)
 
+                # Usar cores do tema atual
+                card_color = colors.get('surface', colors.get('card_bg', colors.get('secondary', ft.Colors.GREY_100))) if info['header_ok'] else ft.Colors.RED_100
+                
                 card = ft.Card(
-                    color=colors['card_bg'] if 'card_bg' in colors else colors['surface'],
-                    elevation=2,
+                    color=card_color,
+                    elevation=1,
                     content=ft.Container(
-                        padding=12,
+                        padding=10,
                         content=ft.Column([
                             ft.Row([
-                                ft.Icon(ft.Icons.CHECK_CIRCLE if info['header_ok'] else ft.Icons.ERROR, color=status_color, size=22),
-                                ft.Text(os.path.basename(info['path']), size=13, weight=ft.FontWeight.BOLD, color=colors['text_container_primary'], expand=True),
-                                ft.IconButton(icon=ft.Icons.DELETE, icon_color=ft.Colors.RED_400, tooltip="Remover arquivo", on_click=make_remove(info['path']))
-                            ], spacing=8),
-                            ft.Text(errors_text, size=11, color=colors['text_container_secondary'])
-                        ], spacing=6)
+                                ft.Icon(ft.Icons.CHECK_CIRCLE if info['header_ok'] else ft.Icons.ERROR, color=status_color, size=18),
+                                ft.Column([
+                                    ft.Text(os.path.basename(info['path']), size=12, weight=ft.FontWeight.BOLD, 
+                                           color=colors['text_container_primary'], overflow=ft.TextOverflow.ELLIPSIS),
+                                    ft.Text(errors_text, size=10, color=colors['text_container_secondary'], 
+                                           max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+                                ], spacing=2, expand=True),
+                                ft.IconButton(icon=ft.Icons.DELETE, icon_color=ft.Colors.RED_400, tooltip="Remover arquivo", 
+                                            on_click=make_remove(info['path']), icon_size=16)
+                            ], spacing=8, alignment=ft.MainAxisAlignment.START)
+                        ])
                     )
                 )
                 col.controls.append(card)
@@ -289,6 +352,235 @@ class FileImportManager:
             self.app.page.update()
         except Exception:
             pass
+    
+    def _setup_progress_in_dialog(self):
+        """Redimensiona a janela atual e adiciona componentes de progresso"""
+        colors = self.app.theme_manager.get_theme_colors()
+        
+        # Criar componentes de progresso (apenas barra e texto)
+        self.progress_bar = ft.ProgressBar(width=None, color=colors['accent'], expand=True, height=6)
+        self.progress_text = ft.Text("Preparando importação...", size=14, weight=ft.FontWeight.BOLD)
+        self.progress_details = ft.Text("", size=1, color=colors['text_container_secondary'])
+        
+        # Container para o resultado final (inicialmente vazio)
+        self.result_container = ft.Container(
+            content=ft.Column([], spacing=10),
+            visible=False
+        )
+        
+        # Limpar container atual e adicionar componentes de progresso
+        if hasattr(self, 'files_list_container') and self.files_list_container:
+            # Manter altura original
+            self.files_list_container.height = 240
+            
+            # Novo conteúdo com progresso (mais simples)
+            progress_content = ft.Column([
+                ft.Text("Importação em Andamento", size=16, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']),
+                ft.Container(height=3),  # Espaçamento
+                self.progress_text,
+                self.progress_bar,
+                self.progress_details,
+                ft.Container(height=3),  # Espaçamento
+                self.result_container  # Container para resultado final
+            ], spacing=8, alignment=ft.MainAxisAlignment.START)
+            
+            self.files_list_container.content = progress_content
+            
+            # Atualizar o diálogo para mostrar as mudanças
+            if hasattr(self, 'import_dialog') and self.import_dialog:
+                self.app.page.update()
+
+    def _create_progress_dialog(self):
+        """Cria janela de progresso para importação (método original mantido para compatibilidade)"""
+        colors = self.app.theme_manager.get_theme_colors()
+        
+        # Componentes da janela de progresso
+        self.progress_bar = ft.ProgressBar(width=400, color=colors['accent'])
+        self.progress_text = ft.Text("Preparando...", size=14)
+        self.progress_details = ft.Text("", size=12, color=colors['text_container_secondary'])
+        self.progress_log = ft.Column([], height=200, scroll=ft.ScrollMode.AUTO)
+        
+        progress_content = ft.Container(
+            content=ft.Column([
+                ft.Text("Importando arquivos VPCR", size=16, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                self.progress_text,
+                self.progress_bar,
+                self.progress_details,
+                ft.Divider(),
+                ft.Text("Log de importação:", size=12, weight=ft.FontWeight.BOLD),
+                ft.Container(
+                    content=self.progress_log,
+                    bgcolor=colors['secondary'],
+                    padding=10,
+                    border_radius=8,
+                    border=ft.border.all(1, colors['text_container_secondary'])
+                )
+            ], spacing=10, width=500, height=400),
+            padding=20
+        )
+        
+        self.progress_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Progresso da Importação"),
+            content=progress_content,
+            actions=[
+                ft.TextButton("Executar em background", on_click=self._close_progress_dialog)
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        
+        self.app.page.open(self.progress_dialog)
+    
+    def _restore_dialog_to_file_listing(self):
+        """Restaura a janela para mostrar a listagem de arquivos"""
+        if hasattr(self, 'files_list_container') and self.files_list_container:
+            # Restaurar altura original
+            self.files_list_container.height = 240
+            
+            # Restaurar conteúdo original (listagem de arquivos)
+            self.files_list_container.content = ft.Column([], spacing=10, scroll=ft.ScrollMode.AUTO)
+            
+            # Atualizar a listagem de arquivos
+            self._update_files_listing()
+            
+            # Restaurar altura do diálogo principal
+            if hasattr(self, 'import_dialog') and self.import_dialog:
+                self.import_dialog.content.height = 500
+                
+            try:
+                self.app.page.update()
+            except Exception:
+                pass
+    
+    def _show_import_results(self, total_lines, imported, updated, files_count, errors_count):
+        """Mostra os resultados finais da importação na janela"""
+        if hasattr(self, 'result_container') and self.result_container:
+            colors = self.app.theme_manager.get_theme_colors()
+            
+            # Limpar progresso anterior
+            if hasattr(self, 'progress_bar'):
+                self.progress_bar.value = 1.0  # 100%
+            if hasattr(self, 'progress_text'):
+                self.progress_text.value = "✅ Importação Concluída!"
+            if hasattr(self, 'progress_details'):
+                self.progress_details.value = ""
+            
+            # Criar resumo dos resultados
+            result_content = ft.Column([
+                ft.Container(height=10),
+                ft.Text("📊 Resumo da Importação", size=14, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']),
+                ft.Divider(),
+                ft.Row([
+                    ft.Icon(ft.Icons.DESCRIPTION, color=colors['accent'], size=20),
+                    ft.Text(f"Linhas processadas: {total_lines}", size=13, color=colors['text_container_primary'])
+                ], spacing=10),
+                ft.Row([
+                    ft.Icon(ft.Icons.ADD_CIRCLE, color=ft.Colors.GREEN, size=20),
+                    ft.Text(f"Novos itens: {imported}", size=13, color=colors['text_container_primary'])
+                ], spacing=10),
+                ft.Row([
+                    ft.Icon(ft.Icons.UPDATE, color=ft.Colors.BLUE, size=20),
+                    ft.Text(f"Itens atualizados: {updated}", size=13, color=colors['text_container_primary'])
+                ], spacing=10),
+                ft.Row([
+                    ft.Icon(ft.Icons.FOLDER, color=colors['accent'], size=20),
+                    ft.Text(f"Arquivos processados: {files_count}", size=13, color=colors['text_container_primary'])
+                ], spacing=10),
+            ], spacing=8)
+            
+            if errors_count > 0:
+                result_content.controls.append(
+                    ft.Row([
+                        ft.Icon(ft.Icons.ERROR, color=ft.Colors.RED, size=20),
+                        ft.Text(f"Erros encontrados: {errors_count}", size=13, color=ft.Colors.RED)
+                    ], spacing=10)
+                )
+            
+            # Botão para fechar
+            result_content.controls.append(ft.Container(height=10))
+            result_content.controls.append(
+                ft.ElevatedButton(
+                    "Fechar",
+                    icon=ft.Icons.CLOSE,
+                    on_click=lambda e: self._close_import_dialog(),
+                    bgcolor=colors.get('accent', ft.Colors.BLUE),
+                    color=ft.Colors.WHITE
+                )
+            )
+            
+            self.result_container.content = result_content
+            self.result_container.visible = True
+            
+            try:
+                self.app.page.update()
+            except Exception:
+                pass
+    
+    def _close_import_dialog(self):
+        """Fecha o diálogo de importação e limpa os arquivos"""
+        # Limpar arquivos importados
+        self.validated_files.clear()
+        
+        # Fechar janela
+        if hasattr(self, 'import_dialog') and self.import_dialog:
+            try:
+                self.app.page.close(self.import_dialog)
+            except Exception:
+                pass
+    
+    def _update_progress(self, message, current, total, details=""):
+        """Atualiza a janela de progresso"""
+        if hasattr(self, 'progress_bar') and self.progress_bar:
+            self.progress_bar.value = current / total if total > 0 else 0
+            self.progress_text.value = f"{message} ({current}/{total})"
+            if details:
+                self.progress_details.value = details
+            
+            try:
+                # Atualizar tanto a janela de progresso quanto o diálogo principal
+                if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                    self.app.page.update()
+                elif hasattr(self, 'import_dialog') and self.import_dialog:
+                    self.app.page.update()
+            except Exception:
+                pass
+    
+    def _close_progress_dialog(self, e=None):
+        """Fecha a janela de progresso"""
+        try:
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.app.page.close(self.progress_dialog)
+        except Exception:
+            pass
+    
+    def _add_close_button_to_progress(self):
+        """Adiciona botão 'Fechar' quando importação termina"""
+        try:
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                # Substituir ações com botão de fechar
+                self.progress_dialog.actions = [
+                    ft.ElevatedButton(
+                        "Fechar", 
+                        on_click=self._close_progress_dialog, 
+                        icon=ft.Icons.CHECK, 
+                        color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.GREEN
+                    )
+                ]
+                # Forçar atualização do diálogo
+                try:
+                    self.progress_dialog.update()
+                except:
+                    pass
+                
+                # Atualizar a página também
+                try:
+                    self.app.page.update()
+                except Exception as e:
+                    print(f"Erro ao atualizar página no _add_close_button_to_progress: {e}")
+        except Exception as e:
+            print(f"Erro em _add_close_button_to_progress: {e}")
 
     def execute_import(self):
         """Executa a importação dos arquivos selecionados"""
@@ -299,19 +591,19 @@ class FileImportManager:
             )
             return
         
+        # Redimensionar janela atual e adicionar barra de progresso
+        self._setup_progress_in_dialog()
+        
         try:
             total_imported = 0
             total_updated = 0
             total_lines = 0
             errors = []
             
-            # Mostrar notificação de início
-            self.app.show_custom_notification(
-                f"Iniciando importação de {len(self.validated_files)} arquivo(s)...", 
-                color=ft.Colors.BLUE_400
-            )
+            # Atualizar progresso inicial
+            self._update_progress("Iniciando importação...", 0, len(self.validated_files))
             
-            for file_info in self.validated_files:
+            for file_index, file_info in enumerate(self.validated_files, 1):
                 file_path = file_info['path']
                 file_name = os.path.basename(file_path)
                 
@@ -322,23 +614,54 @@ class FileImportManager:
                     lines_in_file = len(df)
                     total_lines += lines_in_file
                     
-                    print(f"Processando {file_name}: {lines_in_file} linhas encontradas")
+                    # Atualizar progresso
+                    self._update_progress(f"Processando {file_name}", file_index-1, len(self.validated_files), 
+                                        f"{lines_in_file} linhas encontradas")
+                    
+                    # Callback simplificado (não exibe logs detalhados)
+                    def progress_callback(message):
+                        # Apenas atualizar os detalhes do progresso
+                        if hasattr(self, 'progress_details') and self.progress_details:
+                            # Mostrar apenas a última mensagem relevante
+                            if "linhas processadas" in message.lower():
+                                self.progress_details.value = message
+                                try:
+                                    self.app.page.update()
+                                except:
+                                    pass
                     
                     # Executar importação via DatabaseManager
-                    result = self.app.db_manager.import_from_excel(file_path)
+                    result = self.app.db_manager.import_from_excel(file_path, progress_callback)
                     
                     if result['success']:
                         total_imported += result['imported']
                         total_updated += result['updated']
-                        print(f"✓ {file_name}: {result['imported']} novos, {result['updated']} atualizados")
+                        logs_info = f", {result.get('logs_created', 0)} logs" if result.get('logs_created', 0) > 0 else ""
+                        success_msg = f"✅ {file_name}: {result['imported']} novos, {result['updated']} atualizados{logs_info}"
+                        
+                        # Capturar itens atualizados se houver
+                        if result.get('updated_items'):
+                            self.app.recently_updated_items.update(result['updated_items'])
+                        
+                        # Atualizar progresso com sucesso
+                        self._update_progress(f"✅ Concluído: {file_name}", file_index, len(self.validated_files), success_msg)
                     else:
                         errors.append(f"{file_name}: {result.get('error', 'Erro desconhecido')}")
-                        print(f"✗ {file_name}: {result.get('error', 'Erro desconhecido')}")
+                        error_msg = f"❌ {file_name}: {result.get('error', 'Erro desconhecido')}"
+                        
+                        # Atualizar progresso com erro
+                        self._update_progress(f"❌ Erro: {file_name}", file_index, len(self.validated_files), error_msg)
                         
                 except Exception as e:
                     error_msg = f"{file_name}: {str(e)}"
                     errors.append(error_msg)
-                    print(f"✗ {error_msg}")
+                    
+                    # Atualizar progresso com exceção
+                    self._update_progress(f"❌ Exceção: {file_name}", file_index, len(self.validated_files), f"Erro: {str(e)}")
+            
+            # Atualizar progresso final
+            self._update_progress("✅ Importação concluída!", len(self.validated_files), len(self.validated_files), 
+                                f"Total: {total_imported} novos, {total_updated} atualizados")
             
             # Mostrar resultado final
             if total_imported > 0 or total_updated > 0:
@@ -356,15 +679,33 @@ class FileImportManager:
                 # Atualizar dados na aplicação principal
                 self.app.refresh_data_from_db()
                 
+                # Agendar limpeza dos ícones "NEW" após 30 segundos
+                import threading
+                def clear_new_icons():
+                    import time
+                    time.sleep(30)  # Esperar 30 segundos
+                    try:
+                        self.app.recently_updated_items.clear()
+                        # Proteger a chamada update_card_list para evitar erros
+                        if hasattr(self.app, 'update_card_list'):
+                            self.app.update_card_list(preserve_scroll=True)
+                    except Exception as e:
+                        print(f"Erro ao limpar ícones NEW: {e}")
+                        pass
+                
+                threading.Thread(target=clear_new_icons, daemon=True).start()
+                
+                # Mostrar resultado final na própria janela
+                self._show_import_results(total_lines, total_imported, total_updated, len(self.validated_files), len(errors))
+                
                 # Usar notificação de sucesso ou warning se houver erros
                 color = ft.Colors.GREEN_400 if not errors else ft.Colors.ORANGE_400
                 self.app.show_custom_notification(success_message, color=color, duration=5000)
-                
-                # Fechar janela de importação após sucesso
-                if hasattr(self, 'import_dialog') and self.import_dialog:
-                    self.app.page.close(self.import_dialog)
                     
             else:
+                # Mostrar resultado de falha na própria janela
+                self._show_import_results(total_lines, total_imported, total_updated, len(self.validated_files), len(errors))
+                
                 error_message = (
                     f"❌ Nenhum item foi importado!\n"
                     f"📊 Linhas processadas: {total_lines}\n"
@@ -380,6 +721,9 @@ class FileImportManager:
                         error_message += f"\n... e mais {len(errors) - 3} erro(s)"
                 
                 self.app.show_custom_notification(error_message, color=ft.Colors.RED_400, duration=6000)
+                
+                # Adicionar botão "Fechar" na janela de progresso
+                self._add_close_button_to_progress()
                 
             # Log detalhado no console
             print(f"\n=== RESUMO DA IMPORTAÇÃO ===")
@@ -398,6 +742,20 @@ class FileImportManager:
             error_msg = f"💥 Erro crítico durante a importação: {str(e)}"
             print(f"ERRO CRÍTICO: {e}")
             self.app.show_custom_notification(error_msg, color=ft.Colors.RED_400, duration=6000)
+            
+            # Adicionar botão "Fechar" mesmo em caso de erro crítico
+            try:
+                self._add_close_button_to_progress()
+            except Exception as e2:
+                print(f"Erro ao adicionar botão fechar após erro crítico: {e2}")
+        
+        # Sempre garantir que há um botão para fechar a janela de progresso
+        finally:
+            try:
+                # Se ainda não foi chamado, chamar aqui
+                self._add_close_button_to_progress()
+            except Exception:
+                pass
 
 
 class NotificationIconAnimator:
@@ -593,6 +951,32 @@ class DatabaseManager:
             print(f"Erro ao converter data '{date_str}': {e}")
             return str(date_str) if date_str else ""
     
+    def format_date_for_display(self, date_str):
+        """Formata data para exibição na interface (converte m/d/yyyy para dd/mm/yyyy)"""
+        if not date_str or str(date_str).strip() == "":
+            return ""
+        
+        try:
+            date_str = str(date_str).strip()
+            
+            # Se contém '/' assume formato de data
+            if '/' in date_str and len(date_str.split('/')) == 3:
+                parts = date_str.split('/')
+                if len(parts) == 3 and all(part.isdigit() for part in parts):
+                    # Se primeiro número > 12, provavelmente já está em dd/mm/yyyy
+                    if int(parts[0]) > 12:
+                        return date_str  # Já está em dd/mm/yyyy
+                    else:
+                        # Assumir m/d/yyyy e converter para dd/mm/yyyy
+                        month, day, year = parts
+                        return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+            
+            return date_str  # Retornar como está se não for reconhecido como data
+            
+        except Exception as e:
+            # Se houver erro, retornar como está
+            return str(date_str)
+    
     def log_change(self, item_id, field_name, old_value, new_value, change_type='update', conn=None):
         """Registra uma alteração no log"""
         # Só registra se houver mudança real
@@ -631,6 +1015,17 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM vpcr WHERE vpcr = ?', (item_id,))
+            columns = [description[0] for description in cursor.description]
+            row = cursor.fetchone()
+            if row:
+                return dict(zip(columns, row))
+            return None
+    
+    def get_item_by_vpcr(self, vpcr_id):
+        """Busca um item específico pela coluna vpcr (VPCR Project ID)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM vpcr WHERE vpcr = ?', (vpcr_id,))
             columns = [description[0] for description in cursor.description]
             row = cursor.fetchone()
             if row:
@@ -755,8 +1150,8 @@ class DatabaseManager:
             if conn:
                 conn.close()
     
-    def import_from_excel(self, file_path):
-        """Importa dados do Excel comparando com dados existentes"""
+    def import_from_excel(self, file_path, progress_callback=None):
+        """Importa dados do Excel comparando com dados existentes e gerando logs apenas para mudanças"""
         try:
             import pandas as pd
             import time
@@ -766,123 +1161,179 @@ class DatabaseManager:
             
             # Mapear colunas do Excel para campos do banco
             column_mapping = {
-                'VPCR Project ID': 'vpcr',  # Campo VPCR correto
-                'VPCR Title': 'Title',
-                'Initiated Date': 'Initiated Date',
-                'Last Updated Date': 'Last Update',
-                'Closed Date': 'Closed Date',
-                'Category 3 (Group)': 'Category',
-                'Current Supplier': 'Supplier',
-                'Affected Items': 'PNs',
-                'Plants Affected - Post CPIF Integration': 'Plants Affected',
-                'VPCR Requestor': 'Requestor',
-                'Sourcing Manager': 'Sourcing Manager',
-                'SQIE(s)': 'SQIE',
-                'VPCR Status': 'Status',
-                'Type of VPCR': 'Type of VPCR',
-                'Proposed Supplier': 'Proposed Supplier',
-                'Category 2 (Area)': 'Category 2 (Area)',
-                'Supporting Documentation': 'Supporting Documentation',
-                'Project Editor': 'Project Editor',
-                'Change Manager': 'Change Manager',
-                'Desired Production Date at Affected Plant(s)': 'Desired Production Date at Affected Plant(s)',
-                'SCR Item ID': 'SCR Item ID'
+                'VPCR Project ID': 'vpcr',  # Campo chave para comparação
+                'VPCR Title': 'vpcr_title',
+                'Initiated Date': 'initiated_date',
+                'Last Updated Date': 'last_update',
+                'Closed Date': 'closed_date',
+                'Category 3 (Group)': 'category_3_group',
+                'Current Supplier': 'current_supplier',
+                'Affected Items': 'items_affected',
+                'Plants Affected - Post CPIF Integration': 'plants_affected',
+                'VPCR Requestor': 'vpcr_requestor',
+                'Sourcing Manager': 'sourcing_manager',
+                'SQIE(s)': 'sqie_s',
+                'VPCR Status': 'vpcr_status',
+                'Type of VPCR': 'type_of_vpcr',
+                'Proposed Supplier': 'proposed_supplier',
+                'Category 2 (Area)': 'category_2_area',
+                'Supporting Documentation': 'supporting_documentation',
+                'Project Editor': 'project_editor',
+                'Change Manager': 'change_manager',
+                'Desired Production Date at Affected Plant(s)': 'desired_production_date',
+                'SCR Item ID': 'scr_item_id'
             }
             
             imported_count = 0
             updated_count = 0
-            batch_size = 10  # Processar em lotes menores
+            logs_created = 0
+            total_rows = len(df)
+            updated_items = []  # Lista para rastrear itens atualizados
             
-            # Processar em lotes para evitar locks prolongados
-            for batch_start in range(0, len(df), batch_size):
-                batch_end = min(batch_start + batch_size, len(df))
-                batch_df = df.iloc[batch_start:batch_end]
-                
-                for index, row in batch_df.iterrows():
-                    try:
-                        # Preparar dados do item
-                        item_data = {}
-                        
-                        for excel_col, db_field in column_mapping.items():
-                            if excel_col in row:
-                                value = row[excel_col]
-                                
-                                # Converter datas
-                                if 'Date' in excel_col:
-                                    value = self.convert_date_format(value)
-                                
-                                # Tratar valores NaN
-                                if pd.isna(value):
-                                    value = ""
-                                else:
-                                    value = str(value).strip()
-                                
-                                # Processar campos que devem ser listas (separados por ;)
-                                if db_field in ['PNs', 'Plants Affected'] and value:
-                                    # Quebrar por ";" e limpar espaços
-                                    value_list = [item.strip() for item in value.split(';') if item.strip()]
-                                    # Manter como string para compatibilidade, mas formatada como lista
-                                    value = '; '.join(value_list)
-                                
-                                item_data[db_field] = value
-                        
-                        # Verificar se tem ID válido
-                        if not item_data.get('ID'):
-                            print(f"Linha {index + 1}: ID não encontrado, pulando...")
-                            continue
-                        
-                        # Verificar se item já existe (usando método separado para evitar conflitos)
-                        existing = None
-                        retry_count = 3
-                        for attempt in range(retry_count):
-                            try:
-                                existing = self.get_item_from_db(item_data['ID'])
-                                break
-                            except Exception as e:
-                                if 'locked' in str(e).lower() and attempt < retry_count - 1:
-                                    time.sleep(0.1 * (attempt + 1))  # Espera exponencial
-                                    continue
-                                else:
-                                    raise e
-                        
-                        # Fazer upsert com retry
-                        for attempt in range(retry_count):
-                            try:
-                                self.upsert_item(item_data)
-                                break
-                            except Exception as e:
-                                if 'locked' in str(e).lower() and attempt < retry_count - 1:
-                                    time.sleep(0.1 * (attempt + 1))  # Espera exponencial
-                                    continue
-                                else:
-                                    raise e
-                        
-                        if existing:
-                            updated_count += 1
-                        else:
-                            imported_count += 1
-                            
-                    except Exception as e:
-                        print(f"Erro ao processar linha {index + 1}: {e}")
+            if progress_callback:
+                progress_callback(f"Iniciando processamento de {total_rows} linhas...")
+            
+            # Processar linha por linha
+            for index, row in df.iterrows():
+                try:
+                    # Obter o VPCR Project ID da planilha
+                    vpcr_project_id = row.get('VPCR Project ID')
+                    
+                    if pd.isna(vpcr_project_id) or not str(vpcr_project_id).strip():
+                        if progress_callback:
+                            progress_callback(f"Linha {index + 1}: VPCR Project ID não encontrado, pulando...")
                         continue
+                    
+                    vpcr_project_id = str(vpcr_project_id).strip()
+                    
+                    # Preparar dados da planilha (salvando exatamente como está na planilha)
+                    excel_data = {}
+                    for excel_col, db_field in column_mapping.items():
+                        if excel_col in row:
+                            value = row[excel_col]
+                            
+                            # Apenas tratar valores NaN (converter para string vazia)
+                            if pd.isna(value):
+                                value = ""
+                            else:
+                                # Converter para string mantendo formato original da planilha
+                                value = str(value)
+                            
+                            excel_data[db_field] = value
+                    
+                    # Verificar se item já existe no banco (comparar com coluna 'vpcr')
+                    existing_item = self.get_item_by_vpcr(vpcr_project_id)
+                    
+                    conn = None
+                    try:
+                        conn = self.get_connection()
+                        cursor = conn.cursor()
+                        cursor.execute('BEGIN IMMEDIATE')
+                        
+                        if existing_item:
+                            # Item existe - verificar se há mudanças
+                            changes_found = False
+                            field_changes = []
+                            
+                            for db_field, new_value in excel_data.items():
+                                old_value = existing_item.get(db_field, '')
+                                # Normalizar valores para comparação
+                                old_str = str(old_value).strip() if old_value else ''
+                                new_str = str(new_value).strip() if new_value else ''
+                                
+                                if old_str != new_str:
+                                    changes_found = True
+                                    field_changes.append((db_field, old_value, new_value))
+                                    
+                                    # Registrar log da mudança
+                                    cursor.execute('''
+                                        INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
+                                        VALUES (?, ?, ?, ?, ?)
+                                    ''', (vpcr_project_id, db_field, old_str, new_str, 'update'))
+                                    logs_created += 1
+                            
+                            if changes_found:
+                                # Atualizar apenas campos que mudaram
+                                update_fields = []
+                                update_values = []
+                                
+                                for db_field, old_val, new_val in field_changes:
+                                    update_fields.append(f'{db_field} = ?')
+                                    update_values.append(new_val)
+                                
+                                if update_fields:
+                                    update_sql = f'UPDATE vpcr SET {", ".join(update_fields)} WHERE vpcr = ?'
+                                    update_values.append(vpcr_project_id)
+                                    cursor.execute(update_sql, update_values)
+                                
+                                updated_count += 1
+                                updated_items.append(vpcr_project_id)  # Adicionar à lista de atualizados
+                                if progress_callback:
+                                    progress_callback(f"Linha {index + 1}: {vpcr_project_id} - {len(field_changes)} campo(s) atualizado(s)")
+                            else:
+                                if progress_callback:
+                                    progress_callback(f"Linha {index + 1}: {vpcr_project_id} - Sem alterações")
+                        else:
+                            # Item novo - inserir e registrar log "initial input"
+                            fields = list(excel_data.keys())
+                            placeholders = ', '.join(['?' for _ in fields])
+                            field_names = ', '.join(fields)
+                            values = list(excel_data.values())
+                            
+                            insert_sql = f'INSERT INTO vpcr ({field_names}) VALUES ({placeholders})'
+                            cursor.execute(insert_sql, values)
+                            
+                            # Registrar log "initial input"
+                            cursor.execute('''
+                                INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
+                                VALUES (?, ?, ?, ?, ?)
+                            ''', (vpcr_project_id, 'ITEM_CREATED', '', 'initial input', 'create'))
+                            logs_created += 1
+                            
+                            imported_count += 1
+                            if progress_callback:
+                                progress_callback(f"Linha {index + 1}: {vpcr_project_id} - Novo item criado")
+                        
+                        conn.commit()
+                        
+                    except Exception as e:
+                        if conn:
+                            conn.rollback()
+                        raise e
+                    finally:
+                        if conn:
+                            conn.close()
+                            
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(f"Erro na linha {index + 1}: {e}")
+                    continue
                 
-                # Pequena pausa entre lotes para permitir outras operações
-                time.sleep(0.01)
+                # Atualizar progresso
+                if progress_callback and (index + 1) % 5 == 0:
+                    progress_callback(f"Processadas {index + 1}/{total_rows} linhas...")
+            
+            if progress_callback:
+                progress_callback(f"✅ Importação concluída: {imported_count} novos, {updated_count} atualizados, {logs_created} logs criados")
             
             return {
                 'success': True,
                 'imported': imported_count,
                 'updated': updated_count,
-                'total_processed': imported_count + updated_count
+                'logs_created': logs_created,
+                'total_processed': imported_count + updated_count,
+                'updated_items': updated_items
             }
             
         except Exception as e:
-            print(f"Erro na importação: {e}")
+            if progress_callback:
+                progress_callback(f"❌ Erro na importação: {e}")
             return {
                 'success': False,
                 'error': str(e),
                 'imported': 0,
                 'updated': 0,
+                'logs_created': 0,
                 'total_processed': 0
             }
     
@@ -1146,6 +1597,16 @@ class VPCRApp:
         self.card_select_mode = False
         self.card_selection = set()  # IDs selecionados para exportação
         
+        # Rastrear itens recentemente atualizados para exibir ícone "new"
+        self.recently_updated_items = set()  # IDs de itens recentemente atualizados
+        self.recently_selected_items = {}   # IDs -> timestamp de itens recentemente selecionados
+        self.pending_animated_buttons = {}  # Para animações pendentes
+        
+        # Sinalizadores para controle de atualização de cards
+        self._updating_card_list = False
+        self._pending_card_list_update = False
+        self._card_list_refresh_attempts = 0
+        
         # Campos detalhados (valores mostrados no painel direito)
         # Inicializar com valores de exemplo; chaves seguem os rótulos originais
         self.detail_fields = {
@@ -1186,158 +1647,436 @@ class VPCRApp:
         self.selected_item = None
         self.selected_item_id = None
         
-        # Filtro para mostrar apenas cards com TODOs ativos
-        self.show_only_active_todos = False
+        # Removido filtro show_only_active_todos - itens com TODOs serão automaticamente priorizados
+        # Armazena botões de notificação que precisam iniciar animação somente
+        # depois que a lista de cards for realmente renderizada na página.
+        # (corrige erro: "Control must be added to the page first")
+        # Dicionário (item_id -> IconButton) aguardando início de animação após renderização
+        self.pending_animated_buttons = {}  # type: Dict[int, ft.IconButton]
         
+    def get_status_progression(self, current_status):
+        """
+        Retorna uma lista de tuplas (status_name, is_completed) baseado no status atual.
+        Todos os status até o status atual devem estar verdes (completed=True).
+        """
+        # Lista ordenada de todos os status possíveis
+        status_order = [
+            "Draft",
+            "Preliminary Change Manager Review", 
+            "Preliminary Review",
+            "Cross Functional Review",
+            "Secondary Change Manager Review",
+            "Pending Resource Assignment",
+            "Cost and Lead Time Analysis",
+            "Engineering Work in Progress", 
+            "Purchasing Work in Progress",
+            "Pending Plant Implementation",
+            "Work Complete"
+        ]
+        
+        # Normalizar o status atual (remover quebras de linha)
+        if current_status:
+            normalized_current = current_status.replace("\n", " ").strip()
+        else:
+            normalized_current = "Draft"  # Default se não houver status
+        
+        # Encontrar o índice do status atual
+        current_index = -1
+        for i, status in enumerate(status_order):
+            if normalized_current.lower() in status.lower() or status.lower() in normalized_current.lower():
+                current_index = i
+                break
+        
+        # Se não encontrou, assumir que está no Draft
+        if current_index == -1:
+            current_index = 0
+        
+        # Criar lista com status completados até o atual
+        status_items = []
+        for i, status in enumerate(status_order):
+            is_completed = i <= current_index
+            # Adicionar quebras de linha para nomes longos para manter layout
+            if status == "Preliminary Change Manager Review":
+                display_name = "Preliminary Change\nManager Review"
+            elif status == "Preliminary Review":
+                display_name = "Preliminary\nReview"
+            elif status == "Cross Functional Review":
+                display_name = "Cross Functional\nReview"
+            elif status == "Secondary Change Manager Review":
+                display_name = "Secondary Change\nManager Review"
+            elif status == "Pending Resource Assignment":
+                display_name = "Pending Resource\nAssignment"
+            elif status == "Cost and Lead Time Analysis":
+                display_name = "Cost and Lead Time\nAnalysis"
+            elif status == "Engineering Work in Progress":
+                display_name = "Engineering\nWork in Progress"
+            elif status == "Purchasing Work in Progress":
+                display_name = "Purchasing\nWork in Progress"
+            elif status == "Pending Plant Implementation":
+                display_name = "Pending Plant\nImplementation"
+            elif status == "Work Complete":
+                display_name = "Work\nComplete"
+            else:
+                display_name = status
+            
+            status_items.append((display_name, is_completed))
+        
+        return status_items
+    
+    def build_status_line(self):
+        """
+        Constrói e retorna o container da linha de status baseado no item atualmente selecionado.
+        Trata casos especiais de Reject e Hold com ícones únicos centralizados.
+        """
+        colors = self.theme_manager.get_theme_colors()
+        
+        # Obter o status atual do item selecionado
+        current_status = ""
+        if hasattr(self, 'selected_item') and self.selected_item:
+            # Tentar diferentes chaves possíveis para o status
+            current_status = (self.selected_item.get("Status", "") or 
+                            self.selected_item.get("VPCR Status", "") or 
+                            self.selected_item.get("status", ""))
+        else:
+            # Sem item selecionado - mostrar estado vazio
+            return ft.Container(
+                content=ft.Text(
+                    "Selecione um VPCR para ver o status",
+                    size=14,
+                    color=colors["text_container_secondary"],
+                    text_align=ft.TextAlign.CENTER
+                ),
+                bgcolor=colors["secondary"],
+                padding=20,
+                border_radius=8,
+                margin=ft.margin.only(bottom=10),
+                alignment=ft.alignment.center
+            )
+        
+        # Verificar se é um status especial (Reject ou Hold)
+        if current_status and "reject" in current_status.lower():
+            # Status Reject - ícone vermelho com mesmo tamanho e layout dos outros
+            reject_icon = ft.Container(
+                content=ft.Column([
+                    ft.Icon(
+                        ft.Icons.CANCEL,
+                        color=ft.Colors.RED,
+                        size=22
+                    ),
+                    ft.Container(
+                        content=ft.Text(
+                            current_status,
+                            size=10,
+                            color=colors["text_container_primary"],
+                            text_align=ft.TextAlign.CENTER,
+                            max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            tooltip=current_status
+                        ),
+                        height=28,
+                        alignment=ft.alignment.center
+                    )
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+                padding=ft.padding.symmetric(horizontal=4, vertical=2),
+                alignment=ft.alignment.center,
+                expand=True
+            )
+            
+            return ft.Container(
+                content=ft.Row(
+                    controls=[reject_icon],
+                    spacing=0,
+                    alignment=ft.MainAxisAlignment.CENTER
+                ),
+                bgcolor=colors["secondary"],
+                padding=6,
+                border_radius=8,
+                margin=ft.margin.only(bottom=10)
+            )
+        
+        elif current_status and "hold" in current_status.lower():
+            # Status Hold - ícone laranja com mesmo tamanho e layout dos outros
+            hold_icon = ft.Container(
+                content=ft.Column([
+                    ft.Icon(
+                        ft.Icons.PAUSE_CIRCLE,
+                        color=ft.Colors.ORANGE,
+                        size=22
+                    ),
+                    ft.Container(
+                        content=ft.Text(
+                            current_status,
+                            size=10,
+                            color=colors["text_container_primary"],
+                            text_align=ft.TextAlign.CENTER,
+                            max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                            tooltip=current_status
+                        ),
+                        height=28,
+                        alignment=ft.alignment.center
+                    )
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+                padding=ft.padding.symmetric(horizontal=4, vertical=2),
+                alignment=ft.alignment.center,
+                expand=True
+            )
+            
+            return ft.Container(
+                content=ft.Row(
+                    controls=[hold_icon],
+                    spacing=0,
+                    alignment=ft.MainAxisAlignment.CENTER
+                ),
+                bgcolor=colors["secondary"],
+                padding=6,
+                border_radius=8,
+                margin=ft.margin.only(bottom=10)
+            )
+        
+        # Para status normais, continuar com a progressão padrão
+        # Obter a progressão de status baseada no status atual
+        status_progression = self.get_status_progression(current_status)
+        
+        # Lista de ícones correspondentes a cada status
+        status_icons_list = [
+            ft.Icons.EDIT_DOCUMENT,        # Draft
+            ft.Icons.MANAGE_ACCOUNTS,      # Preliminary Change Manager Review
+            ft.Icons.PREVIEW,              # Preliminary Review 
+            ft.Icons.GROUP,                # Cross Functional Review
+            ft.Icons.SUPERVISOR_ACCOUNT,   # Secondary Change Manager Review
+            ft.Icons.ASSIGNMENT_IND,       # Pending Resource Assignment
+            ft.Icons.ANALYTICS,            # Cost and Lead Time Analysis
+            ft.Icons.ENGINEERING,          # Engineering Work in Progress
+            ft.Icons.SHOPPING_CART,        # Purchasing Work in Progress
+            ft.Icons.FACTORY,              # Pending Plant Implementation
+            ft.Icons.TASK_ALT              # Work Complete
+        ]
+        
+        # Criar ícones para cada status
+        status_icons = []
+        for i, (status_text, is_completed) in enumerate(status_progression):
+            # Texto exibido: remover quebras manuais e deixar o wrap natural em até 2 linhas
+            display_text = status_text.replace("\n", " ")
+            
+            # Ícone de status específico com indicador de conclusão
+            if is_completed:
+                # Se completo: ícone específico em verde
+                icon = ft.Icon(
+                    status_icons_list[i],
+                    color=ft.Colors.GREEN,
+                    size=22
+                )
+            else:
+                # Se não completo: ícone específico em cor do tema (desativado)
+                icon = ft.Icon(
+                    status_icons_list[i],
+                    color=colors["surface"],
+                    size=22
+                )
+
+            status_icons.append(
+                ft.Container(
+                    content=ft.Column([
+                        icon,
+                        ft.Container(
+                            content=ft.Text(
+                                display_text,
+                                size=10,
+                                color=colors["text_container_primary"],
+                                text_align=ft.TextAlign.CENTER,
+                                max_lines=2,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                tooltip=status_text
+                            ),
+                            height=28,  # altura aproximada para 2 linhas de fonte size=10
+                            alignment=ft.alignment.center
+                        )
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+                    padding=ft.padding.symmetric(horizontal=4, vertical=2),
+                    alignment=ft.alignment.center,
+                    expand=True
+                )
+            )
+
+        # Criar controles finais com linhas conectando os ícones
+        final_status_controls = []
+        for i, icon_container in enumerate(status_icons):
+            final_status_controls.append(icon_container)
+            # Adicionar linha entre ícones (exceto após o último)
+            if i < len(status_icons) - 1:
+                # Verificar se ambos os ícones adjacentes estão verdes
+                current_completed = status_progression[i][1]
+                next_completed = status_progression[i + 1][1]
+                line_color = ft.Colors.GREEN if (current_completed and next_completed) else colors["surface"]
+                
+                # Linha conectando os ícones
+                connecting_line = ft.Container(
+                    content=ft.Divider(height=2, color=line_color),
+                    width=40,  # Largura maior da linha
+                    alignment=ft.alignment.center,
+                    height=22,  # Altura do ícone para alinhar com o centro
+                    padding=ft.padding.only(top=10)  # Padding para passar pelo centro do ícone
+                )
+                final_status_controls.append(connecting_line)
+
+        # Container da linha de status
+        return ft.Container(
+            content=ft.Row(
+                controls=final_status_controls,
+                spacing=0,  # Espaçamento zero pois as linhas têm largura própria
+                alignment=ft.MainAxisAlignment.START
+            ),
+            bgcolor=colors["secondary"],
+            padding=6,  # Reduzido de 12 para 6
+            border_radius=8,
+            margin=ft.margin.only(bottom=10)
+        )
+
     def initialize_icon_animations(self):
-        """Inicializa as animações dos ícones para itens com TODOs"""
-        for item in self.sample_data:
-            item_id = item.get("ID")
-            if self.db_manager.has_todos(item_id):
-                # Como os cards ainda não foram criados, a animação será iniciada 
-                # no método create_card quando o card for criado
-                pass
+        """Inicializa as animações dos ícones para itens com TODOs e estruturas relacionadas"""
+        # Garantir que estruturas necessárias existam
+        if not hasattr(self, 'animated_icons'):
+            self.animated_icons = {}
+            
+        if not hasattr(self, 'pending_animated_buttons'):
+            self.pending_animated_buttons = {}
+            
+        # Limpar estados anteriores para evitar conflitos
+        self.animated_icons.clear()
+        self.pending_animated_buttons.clear()
+        
+        try:
+            for item in self.sample_data:
+                item_id = item.get("ID")
+                if self.db_manager.has_incomplete_todos(item_id):
+                    # Marcar para animação quando os cards forem criados
+                    # A animação real será iniciada no create_card
+                    pass
+        except Exception as e:
+            print(f"Erro ao inicializar animações de ícones: {e}")
     
     def update_icon_animations(self):
         """Atualiza as animações dos ícones após mudanças nos TODOs"""
-        # Atualizar apenas os itens que não devem mais ser animados
-        active_ids = {item.get("ID") for item in self.sample_data if self.db_manager.has_incomplete_todos(item.get("ID"))}
-        for item_id in list(self.animated_icons.keys()):
-            if item_id not in active_ids:
+        try:
+            # Atualizar apenas os itens que não devem mais ser animados
+            active_ids = {item.get("ID") for item in self.sample_data if self.db_manager.has_incomplete_todos(item.get("ID"))}
+            for item_id in list(self.animated_icons.keys()):
+                if item_id not in active_ids:
+                    try:
+                        btn = self.animated_icons[item_id]
+                        btn.opacity = 1.0
+                    except Exception:
+                        pass
+                    del self.animated_icons[item_id]
+            
+            # Atualizar lista de cards para refletir mudanças nos ícones
+            if hasattr(self, 'card_list'):
                 try:
-                    btn = self.animated_icons[item_id]
-                    btn.opacity = 1.0
+                    # Garantir preservação da ordem e posição do scroll
+                    self.update_card_list(preserve_scroll=True)
                 except Exception:
+                    # Se falhar ao atualizar cards, tentar atualizar apenas a página
                     pass
-                del self.animated_icons[item_id]
-        
-        # Atualizar lista de cards para refletir mudanças nos ícones
-        if hasattr(self, 'card_list'):
-            self.update_card_list()
-            if hasattr(self, 'page'):
-                self.page.update()
+                
+                # Atualizar página de forma segura
+                try:
+                    if hasattr(self, 'page') and self.page:
+                        self.page.update()
+                except (AssertionError, Exception):
+                    # Se falhar no update completo, tentar atualizar apenas componentes específicos
+                    try:
+                        if hasattr(self, 'left_panel') and self.left_panel:
+                            self.left_panel.update()
+                    except Exception:
+                        pass
+        except Exception as e:
+            # Log do erro mas não quebrar a aplicação
+            print(f"Erro ao atualizar animações dos ícones: {e}")
+            pass
     
     def start_icon_animation(self, icon_button, item_id):
-        """Inicia animação síncrona do ícone com fade melhorado"""
+        """Animação simples: mesma cor variando apenas para um tom mais escuro.
+
+        Objetivo: manter identidade visual (laranja) e apenas pulsar para um laranja mais escuro.
+        Não altera opacidade; intervalos mais longos para baixo custo.
+        """
         import time
-        fade_steps = 10  # Número de passos para fade suave
-        
-        while True:  # Continuar animação enquanto o item tiver TODOs incompletos
-            try:
-                # Verificar se ainda deve animar este item
-                if item_id not in self.animated_icons:
-                    break
-                
-                # Obter a referência mais atualizada do botão
-                current_btn = self.animated_icons.get(item_id)
-                if current_btn is None:  # O botão foi removido do dicionário
-                    break
-                    
-                # Usar sempre a referência mais atual
-                icon_button = current_btn
-                
-                # Fade out gradual
-                for step in range(fade_steps):
-                    # Verificar a cada step se deve parar
-                    if item_id not in self.animated_icons:
-                        # Resetar opacidade antes de sair
-                        current_btn = self.animated_icons.get(item_id)
-                        if current_btn:  # Se ainda existe uma referência
-                            current_btn.opacity = 1.0
-                            if hasattr(self, 'page') and self.page:
-                                self.page.update()
-                        return
-                    
-                    # Obter referência atualizada
-                    current_btn = self.animated_icons.get(item_id)
-                    if not current_btn:  # Botão removido durante animação
-                        return
-                        
-                    opacity = 1.0 - (step / fade_steps * 0.7)  # De 1.0 até 0.3
-                    current_btn.opacity = opacity
-                    if hasattr(self, 'page') and self.page:
-                        self.page.update()
-                    time.sleep(0.03)  # 30ms por step = 300ms total para fade out
-                
-                # Verificar antes da pausa
-                if item_id not in self.animated_icons:
-                    current_btn = self.animated_icons.get(item_id)
-                    if current_btn:
-                        current_btn.opacity = 1.0
-                        if hasattr(self, 'page') and self.page:
-                            self.page.update()
-                    return
-                
-                # Manter opacidade baixa por um momento
-                time.sleep(0.1)
-                
-                # Fade in gradual
-                for step in range(fade_steps):
-                    # Verificar a cada step se deve parar
-                    if item_id not in self.animated_icons:
-                        # Resetar opacidade antes de sair
-                        current_btn = self.animated_icons.get(item_id)
-                        if current_btn:
-                            current_btn.opacity = 1.0
-                            if hasattr(self, 'page') and self.page:
-                                self.page.update()
-                        return
-                    
-                    # Obter referência atualizada
-                    current_btn = self.animated_icons.get(item_id)
-                    if not current_btn:  # Botão removido durante animação
-                        return
-                        
-                    opacity = 0.3 + (step / fade_steps * 0.7)  # De 0.3 até 1.0
-                    current_btn.opacity = opacity
-                    if hasattr(self, 'page') and self.page:
-                        self.page.update()
-                    time.sleep(0.03)  # 30ms por step = 300ms total para fade in
-                
-                # Verificar antes da pausa final
-                if item_id not in self.animated_icons:
-                    current_btn = self.animated_icons.get(item_id)
-                    if current_btn:
-                        current_btn.opacity = 1.0
-                        if hasattr(self, 'page') and self.page:
-                            self.page.update()
-                    return
-                
-                # Pausa antes do próximo ciclo
-                time.sleep(0.8)  # Pausa entre pulsações
-                
-            except Exception as e:
-                # Se ocorrer erro, tentar continuar se for um erro transitório
-                time.sleep(0.5)
-                
-                # Se o item não está mais no dicionário, parar a animação
-                if item_id not in self.animated_icons:
-                    break
-                
-        # Garantir que a opacidade seja resetada quando o loop terminar
         try:
-            icon_button.opacity = 1.0
+            self.animated_icons[item_id] = icon_button
+
+            # Cor base e escura na MESMA tonalidade
+            # Usar constantes do Flet quando disponíveis; fallbacks com hex 6 dígitos (sem alpha)
+            base_color = getattr(ft.Colors, 'ORANGE', '#ff9800')          # Orange 500
+            darker_color = getattr(ft.Colors, 'ORANGE_300', "#faba6d")    # Orange 600 (mais escuro sem puxar para vermelho)
+
+            use_base = True
+            interval = 0.75  # levemente mais lento
+
+            while item_id in self.animated_icons:
+                btn = self.animated_icons.get(item_id)
+                if not btn:
+                    break
+                btn.icon_color = base_color if use_base else darker_color
+                use_base = not use_base
+                try:
+                    if hasattr(self, 'page') and self.page:
+                        self.page.update()
+                except AssertionError:
+                    pass
+                time.sleep(interval)
+
+            # Reset final
+            try:
+                btn = self.animated_icons.get(item_id, icon_button)
+                if btn:
+                    btn.icon_color = base_color
+                    if hasattr(self, 'page') and self.page:
+                        self.page.update()
+            except Exception:
+                pass
+        except Exception as e:
+            self.log_error(f"Erro animação sino (mesma cor escurecida): {e}")
+
+    def start_pending_icon_animations(self):
+        """Inicia animações para botões registrados após a lista de cards ser renderizada.
+        Evita chamar update em controles não anexados à página (origem do AssertionError)."""
+        if not self.pending_animated_buttons:
+            return
+        # Copiar para evitar mutação durante iteração
+        pending = dict(self.pending_animated_buttons)
+        self.pending_animated_buttons.clear()
+        for item_id, btn in pending.items():
+            # Garantir que ainda possui TODO incompleto
+            try:
+                if not self.db_manager.has_incomplete_todos(item_id):
+                    continue
+            except Exception:
+                continue
+            # Registrar e iniciar thread de animação
+            self.animated_icons[item_id] = btn
+            import threading as _th
+            t = _th.Thread(target=self.start_icon_animation, args=(btn, item_id), daemon=True)
+            t.start()
+        
+    def stop_all_animations(self):
+        """Para todas as animações ativas"""
+        # Resetar opacidade dos botões animados atuais
+        for btn in list(self.animated_icons.values()):
+            try:
+                btn.opacity = 1.0
+                btn.update()
+            except Exception:
+                pass
+        # Limpar estruturas
+        self.animated_icons.clear()
+        self.pending_animated_buttons.clear()
+        # Update único da página (se necessário)
+        try:
             if hasattr(self, 'page') and self.page:
                 self.page.update()
         except Exception:
             pass
-        
-    def stop_all_animations(self):
-        """Para todas as animações ativas"""
-        # Limpar o dicionário de ícones animados para parar as animações
-        animated_items = list(self.animated_icons.keys())
-        for item_id in animated_items:
-            # Resetar opacidade do ícone
-            if item_id in self.animated_icons:
-                icon_button = self.animated_icons[item_id]
-                icon_button.opacity = 1.0
-        
-        # Limpar o dicionário para parar as animações
-        self.animated_icons.clear()
-        
-        # Atualizar a página para aplicar as mudanças
-        if hasattr(self, 'page') and self.page:
-            self.page.update()
     
     def load_data_from_db(self):
         """Carrega dados do banco de dados na inicialização"""
@@ -1411,11 +2150,43 @@ class VPCRApp:
         except Exception as e:
             print(f"Erro ao atualizar dados do banco: {e}")
         
+    def init_card_structures(self):
+        """Inicializa ou reinicializa estruturas necessárias para o gerenciamento dos cards"""
+        # Garantir que todas as estruturas necessárias existam
+        if not hasattr(self, 'animated_icons'):
+            self.animated_icons = {}
+            
+        if not hasattr(self, 'pending_animated_buttons'):
+            self.pending_animated_buttons = {}
+            
+        if not hasattr(self, 'recently_updated_items'):
+            self.recently_updated_items = set()
+            
+        if not hasattr(self, 'recently_selected_items'):
+            self.recently_selected_items = {}
+            
+        if not hasattr(self, 'expanded_cards'):
+            self.expanded_cards = set()  # IDs dos cards expandidos
+            
+        if not hasattr(self, '_updating_card_list'):
+            self._updating_card_list = False
+            
+        if not hasattr(self, '_pending_card_list_update'):
+            self._pending_card_list_update = False
+            
+        if not hasattr(self, '_card_list_refresh_attempts'):
+            self._card_list_refresh_attempts = 0
+            
+        print("Estruturas de card inicializadas")
+            
     def main(self, page: ft.Page):
         self.page = page
         self.page.title = "VPCR App"
         self.page.window_min_width = 1200
         self.page.window_min_height = 800
+        
+        # Inicializar estruturas de cards
+        self.init_card_structures()
         
         # Aplicar tema inicial
         self.apply_theme()
@@ -1701,18 +2472,7 @@ class VPCRApp:
         # Popular opções únicas a partir dos dados
         self.populate_filter_options()
 
-        # Switch para mostrar apenas TODOs ativos
-        def on_todos_filter_change(e):
-            self.show_only_active_todos = e.control.value
-            
-            # Aplicar filtro (isso recria os cards) sem parar as animações
-            self.filter_data()
-        
-        self.todos_filter_switch = ft.Switch(
-            label="Apenas TODOs ativos",
-            value=self.show_only_active_todos,
-            on_change=on_todos_filter_change
-        )
+        # Switch removido - itens com TODOs serão automaticamente colocados no início
 
         # Painel dropdown customizado (inicialmente oculto)
         # Agora configurado para usar no page.overlay (suspenso)
@@ -1752,40 +2512,55 @@ class VPCRApp:
             requestor_match = matches_multi(requestor_sel, item.get("Requestor", ""))
             continuity_match = matches_multi(continuity_sel, item.get("Continuity", ""))
             
-            # Filtro de TODOs ativos
-            todos_match = True
-            if self.show_only_active_todos:
-                item_id = item.get("ID")
-                has_incomplete_todos = self.db_manager.has_incomplete_todos(item_id)
-                todos_match = has_incomplete_todos
-            
-            if vpcr_match and sm_match and status_multi_match and supplier_match and requestor_match and continuity_match and todos_match:
+            # Remover filtro de TODOs - todos os itens serão mostrados, mas ordenados por prioridade
+            if vpcr_match and sm_match and status_multi_match and supplier_match and requestor_match and continuity_match:
                 self.filtered_data.append(item)
+        
+        # Remover ordenação automática por TODOs - agora mantém ordem original
         
         # Mostrar notificação do resultado do filtro
         if hasattr(self, 'page') and e is not None:  # Não mostrar na inicialização
             count = len(self.filtered_data)
             message = f"Filtro aplicado: {count} item{'s' if count != 1 else ''} encontrado{'s' if count != 1 else ''}"
             
-            snack_bar = ft.SnackBar(
-                content=ft.Text(message),
-                duration=2000  # 2 segundos
-            )
-            self.page.snack_bar = snack_bar
-            snack_bar.open = True
-            self.page.update()
+            try:
+                snack_bar = ft.SnackBar(
+                    content=ft.Text(message),
+                    duration=2000  # 2 segundos
+                )
+                self.page.snack_bar = snack_bar
+                snack_bar.open = True
+                self.page.update()
+            except Exception as ex:
+                print(f"Erro ao mostrar notificação: {ex}")
         
-        self.update_card_list(preserve_scroll=True)
+        try:
+            self.update_card_list(preserve_scroll=True)
+        except Exception as ex:
+            print(f"Erro ao atualizar lista de cards: {ex}")
+            # Tentar recriar a interface se houve erro crítico
+            try:
+                self.recreate_card_list()
+                if hasattr(self, 'page') and self.page:
+                    self.page.update()
+            except Exception as ex2:
+                print(f"Erro crítico ao recriar interface: {ex2}")
     
     def create_card(self, item):
-        """Cria um card para um item"""
+        """Cria um card para um item com funcionalidade de expansão de TODOs"""
         colors = self.theme_manager.get_theme_colors()
         base_font = getattr(self.theme_manager, 'font_size', 14)
+        
         # Inicializar estruturas de estado para tracking de alterações se ainda não existirem
         if not hasattr(self, 'dirty_items'):
             self.dirty_items = set()  # IDs de items modificados e não salvos
         if not hasattr(self, 'card_save_buttons'):
             self.card_save_buttons = {}  # item_id -> referência de botão salvar
+        if not hasattr(self, 'recently_updated_items'):
+            self.recently_updated_items = set()  # IDs de itens recentemente atualizados
+        if not hasattr(self, 'expanded_cards'):
+            self.expanded_cards = set()  # IDs dos cards expandidos
+
         # obter status e cor do status
         status_val = item.get("Status", "")
         status_color = {
@@ -1795,17 +2570,31 @@ class VPCRApp:
         }.get(status_val, ft.Colors.GREY)
 
         # Verificar se este item está selecionado
-        is_selected = self.selected_item_id == item.get("ID")
+        item_id = item.get("ID")
+        is_selected = self.selected_item_id == item_id
         card_bg_color = colors["selected_card"] if is_selected else colors["card_bg"]
+
+        # Verificar se o card está expandido
+        is_expanded = item_id in self.expanded_cards
 
         # construir conteúdo do card dinamicamente conforme visible_fields
         rows = []
 
         # primeira linha: mostrar VPCR e, se presente, o badge de Status
         vpcr_text = item.get("vpcr", item.get("VPCR", ""))
+        
         first_row_controls = [
-            ft.Text(vpcr_text, size=base_font + 2, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"], expand=True)
+            ft.Text(
+                vpcr_text, 
+                size=base_font + 2, 
+                weight=ft.FontWeight.BOLD, 
+                color=colors["text_container_primary"], 
+                expand=True,
+                overflow=ft.TextOverflow.ELLIPSIS,
+                no_wrap=True
+            )
         ]
+        
         if "Status" in self.visible_fields:
             first_row_controls.append(
                 ft.Container(
@@ -1821,7 +2610,10 @@ class VPCRApp:
         # Adicionar linha "Title:" abaixo do título se Title estiver nos campos visíveis
         if "Title" in self.visible_fields:
             title_text = item.get("Title", "")
-            rows.append(ft.Row([ft.Text("Title:", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(title_text, size=base_font, color=colors["text_container_secondary"])], spacing=8))
+            rows.append(ft.Row([
+                ft.Text("Title:", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), 
+                ft.Text(title_text, size=base_font, color=colors["text_container_secondary"], expand=True, overflow=ft.TextOverflow.ELLIPSIS, no_wrap=True)
+            ], spacing=8))
 
         # outras fields (excluir Title já mostrado)
         for f in self.visible_fields:
@@ -1836,51 +2628,34 @@ class VPCRApp:
                         formatted_val = "• " + "\n• ".join(items_list)
                     else:
                         formatted_val = str(val)
+                # Para campos de data, aplicar formatação apenas na apresentação
+                elif "Date" in f:
+                    formatted_val = self.db_manager.format_date_for_display(val)
                 else:
                     formatted_val = str(val)
                     
-                rows.append(ft.Row([ft.Text(f + ":", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), ft.Text(formatted_val, size=base_font, color=colors["text_container_secondary"])], spacing=8))
+                rows.append(ft.Row([
+                    ft.Text(f + ":", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]), 
+                    ft.Text(formatted_val, size=base_font, color=colors["text_container_secondary"], expand=True, overflow=ft.TextOverflow.ELLIPSIS if ";" not in str(val) else None, no_wrap=True if ";" not in str(val) else False)
+                ], spacing=8))
 
-        # Adicionar linha com o ícone de notificação (antes de instanciar container principal)
-        def handle_notification_click(e, current_item=item):
-            # Abre o diálogo de TODOs para o item selecionado
-            self.open_todo_dialog(current_item)
-
+        # Botões de ação (salvar e notificação) - ACIMA dos TODOs
         # Verificar se existe TODOs para este item
-        item_id = item.get("ID")
         has_incomplete = self.db_manager.has_incomplete_todos(item_id)
         
+        # Verificar se item foi recentemente atualizado
+        item_vpcr = item.get("vpcr", item.get("ID", ""))
+        is_recently_updated = item_vpcr in self.recently_updated_items if hasattr(self, 'recently_updated_items') else False
+        
         # Definir cor do ícone baseado no status
-        notification_color = ft.Colors.ORANGE if has_incomplete else colors["accent"]
-        
-        # Criar o IconButton com tamanho maior
-        notification_button = ft.IconButton(
-            ft.Icons.NOTIFICATIONS,
-            icon_size=28,  # Aumentado para 28px
-            icon_color=notification_color,
-            on_click=handle_notification_click,
-            tooltip="Gerenciar TODOs"
-        )
-        
-        # Animar sempre que houver TODOs incompletos, independente do filtro
-        if has_incomplete:
-            # Se já está animando este item, não iniciar nova animação
-            if item_id not in self.animated_icons:
-                self.animated_icons[item_id] = notification_button
-                # Iniciar animação em thread separada
-                import threading
-                animation_thread = threading.Thread(
-                    target=self.start_icon_animation, 
-                    args=(notification_button, item_id)
-                )
-                animation_thread.daemon = True
-                animation_thread.start()
-            else:
-                # Se já estava animando, apenas atualizar a referência do botão
-                self.animated_icons[item_id] = notification_button
+        if is_recently_updated:
+            notification_color = ft.Colors.GREEN  # Verde para itens recentemente atualizados
+        elif has_incomplete:
+            notification_color = ft.Colors.ORANGE  # Laranja para itens com TODOs pendentes
+        else:
+            notification_color = colors["accent"]  # Cor padrão do tema
 
         # Botão de salvar (fica à esquerda do sino). Cor muda se item estiver "sujo".
-        item_id = item.get("ID")
         is_dirty = item_id in self.dirty_items
         save_color = (ft.Colors.ORANGE_400 if is_dirty else colors["accent"]) if hasattr(ft.Colors, 'ORANGE_400') else (colors["accent"])
 
@@ -1897,6 +2672,32 @@ class VPCRApp:
         # Guardar referência para atualizações futuras de cor
         self.card_save_buttons[item_id] = save_button
 
+        # Ícone de notificação (agora apenas mostra status, não abre diálogo)
+        notification_button = ft.Icon(
+            ft.Icons.NOTIFICATIONS,
+            size=24,
+            color=notification_color
+        )
+
+        # Seta de expansão (posicionada abaixo do sino)
+        def toggle_expand(e):
+            """Toggle da expansão do card"""
+            if item_id in self.expanded_cards:
+                self.expanded_cards.remove(item_id)
+            else:
+                self.expanded_cards.add(item_id)
+            # Atualizar apenas este card
+            self.update_card_list(preserve_scroll=True)
+
+        expand_button = ft.IconButton(
+            icon=ft.Icons.KEYBOARD_ARROW_UP if is_expanded else ft.Icons.KEYBOARD_ARROW_DOWN,
+            icon_size=20,
+            icon_color=colors["text_container_primary"],
+            on_click=toggle_expand,
+            tooltip="Expandir/Colapsar TODOs"
+        )
+
+        # Primeira linha: botões salvar e sino
         rows.append(
             ft.Row([
                 ft.Container(expand=True),  # Espaço vazio expansível
@@ -1905,12 +2706,44 @@ class VPCRApp:
             ], alignment=ft.MainAxisAlignment.END, spacing=8)
         )
 
-        # Container principal do card (agora inclui a linha do sino)
+        # Segunda linha: seta de expansão centralizada
+        rows.append(
+            ft.Row([
+                ft.Container(expand=True),  # Espaço vazio expansível à esquerda
+                expand_button,
+                ft.Container(expand=True),  # Espaço vazio expansível à direita
+            ], alignment=ft.MainAxisAlignment.CENTER)
+        )
+
+        # Linha separadora antes dos TODOs (se expandido)
+        if is_expanded:
+            # Usar uma cor que contrasta com o fundo do card
+            # Se o card for claro, usar cinza escuro; se escuro, usar cinza claro
+            theme_mode = getattr(self.theme_manager, 'current_theme', 'light')
+            if theme_mode == 'dark':
+                separator_color = ft.Colors.GREY_700  # Mais claro para tema escuro
+            else:
+                separator_color = ft.Colors.GREY_400  # Mais escuro para tema claro
+            
+            rows.append(
+                ft.Container(
+                    height=1,
+                    bgcolor=separator_color,
+                    margin=ft.margin.symmetric(vertical=10, horizontal=0)
+                )
+            )
+
+        # Seção de TODOs expansível
+        if is_expanded:
+            todos_section = self._create_todos_section(item_id, colors, base_font)
+            if todos_section:
+                rows.append(todos_section)
+
+        # Container principal do card
         column = ft.Column(rows, spacing=6)
 
         # Se estivermos em modo de seleção, mostrar checkbox à esquerda
         if getattr(self, 'card_select_mode', False):
-            item_id = item.get("ID")
             checked = item_id in self.card_selection
             checkbox = ft.Checkbox(value=checked, on_change=lambda e, iid=item_id: self._handle_card_checkbox_change(e, iid))
             # Colocar checkbox e conteúdo em uma linha para manter layout
@@ -1918,10 +2751,17 @@ class VPCRApp:
         else:
             content = column
 
+        def handle_card_click(e):
+            """Handler para clique no card"""
+            try:
+                self.select_item(item)
+            except Exception as ex:
+                print(f"Erro ao selecionar item: {ex}")
+        
         card_container = ft.Container(
             content=content,
             padding=15,
-            on_click=lambda e: self.select_item(item)
+            on_click=handle_card_click
         )
 
         return ft.Card(
@@ -1930,43 +2770,379 @@ class VPCRApp:
             shadow_color=ft.Colors.BLACK26,
             elevation=2
         )
+
+    def _create_todos_section(self, item_id, colors, base_font):
+        """Cria a seção expansível de TODOs para um card"""
+        try:
+            # Buscar TODOs existentes
+            todos = self.db_manager.get_todos_for_item(item_id)
+            
+            todo_rows = []
+            
+            # Adicionar TODOs existentes
+            for todo in todos:
+                todo_row = self._create_todo_row(todo, item_id, colors, base_font)
+                if todo_row:
+                    todo_rows.append(todo_row)
+            
+            # Botão para adicionar novo TODO
+            def add_new_todo(e):
+                """Adiciona um novo TODO inline"""
+                # Criar novo TODO vazio no banco
+                new_todo_id = self.db_manager.add_todo(item_id, "")
+                
+                # Atualizar o card para mostrar o novo TODO
+                self.update_card_list(preserve_scroll=True)
+            
+            add_button = ft.ElevatedButton(
+                text=" Adicionar TODO",
+                icon=ft.Icons.ADD,
+                on_click=add_new_todo,
+                bgcolor=colors.get("accent", ft.Colors.BLUE),
+                color=ft.Colors.WHITE,
+                height=35
+            )
+            
+            todo_rows.append(ft.Container(
+                content=add_button,
+                margin=ft.margin.only(left=20, top=10)
+            ))
+            
+            # Container da seção de TODOs (transparente)
+            todos_container = ft.Container(
+                content=ft.Column(todo_rows, spacing=5),
+                bgcolor=ft.Colors.TRANSPARENT,
+                border_radius=8,
+                padding=ft.padding.all(10),
+                margin=ft.margin.only(left=20, top=10)
+            )
+            
+            return todos_container
+            
+        except Exception as ex:
+            print(f"Erro ao criar seção de TODOs: {ex}")
+            return None
+
+    def _create_todo_row(self, todo, item_id, colors, base_font):
+        """Cria uma linha individual de TODO"""
+        try:
+            todo_id = todo['id']
+            description = todo['description']
+            completed = todo['completed']
+            
+            def toggle_completed(e):
+                """Toggle do status de completado do TODO"""
+                new_status = e.control.value
+                self.db_manager.update_todo(todo_id, completed=new_status)
+                
+            def update_description(e):
+                """Atualiza a descrição do TODO"""
+                new_desc = e.control.value.strip()
+                if new_desc:
+                    self.db_manager.update_todo(todo_id, description=new_desc)
+                else:
+                    # Se descrição vazia, excluir TODO
+                    self.db_manager.delete_todo(todo_id)
+                    self.update_card_list(preserve_scroll=True)
+            
+            def delete_todo(e):
+                """Exclui o TODO"""
+                self.db_manager.delete_todo(todo_id)
+                self.update_card_list(preserve_scroll=True)
+            
+            # Checkbox para marcar como completo
+            checkbox = ft.Checkbox(
+                value=completed,
+                on_change=toggle_completed
+            )
+            
+            # Campo de texto para descrição
+            text_field = ft.TextField(
+                value=description,
+                hint_text="Descrição do TODO...",
+                border_color=colors.get("field_border", ft.Colors.GREY_400),
+                bgcolor=colors.get("field_bg", ft.Colors.WHITE),
+                color=colors.get("field_text", ft.Colors.BLACK),
+                on_blur=update_description,  # Salvar ao perder foco
+                on_submit=update_description,  # Salvar ao pressionar Enter
+                expand=True,
+                multiline=True,
+                min_lines=2,
+                max_lines=5,
+                height=None  # Deixar altura automática para multilinhas
+            )
+            
+            # Botão de deletar
+            delete_button = ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                icon_color=ft.Colors.RED_400,
+                icon_size=20,
+                on_click=delete_todo,
+                tooltip="Excluir TODO"
+            )
+            
+            # Row com todos os elementos
+            todo_row = ft.Row([
+                checkbox,
+                text_field,
+                delete_button
+            ], alignment=ft.MainAxisAlignment.START, spacing=10)
+            
+            return todo_row
+            
+        except Exception as ex:
+            print(f"Erro ao criar linha de TODO: {ex}")
+            return None
     
     def update_card_list(self, preserve_scroll=False):
         """Atualiza a lista de cards"""
         if hasattr(self, 'card_list'):
-            # Salvar posição do scroll se solicitado
-            scroll_position = None
-            if preserve_scroll and hasattr(self.card_list, 'scroll_to'):
-                try:
-                    scroll_position = getattr(self.card_list, 'scroll_offset', None)
-                except:
-                    pass
+            # Guarda de reentrância: se já executando, marcar pendente e sair
+            if getattr(self, '_updating_card_list', False):
+                self._pending_card_list_update = True
+                return
+            self._updating_card_list = True
             
-            # Salvar animações ativas antes de limpar os cards
-            active_animations = {}
-            for item_id, btn in self.animated_icons.items():
-                active_animations[item_id] = True
-            
-            self.card_list.controls.clear()
-            for item in self.filtered_data:
-                self.card_list.controls.append(self.create_card(item))
-            
-            # Restaurar animações para os cards recriados que devem continuar animando
-            for item in self.filtered_data:
-                item_id = item.get("ID")
-                # Se este item tinha animação ativa anteriormente e tem TODOs incompletos
-                if item_id in active_animations and self.db_manager.has_incomplete_todos(item_id):
-                    # Reativar sua animação (será iniciada no create_card se necessário)
-                    pass  # O create_card já fará isso automaticamente
+            try:
+                # Salvar posição do scroll se solicitado
+                scroll_position = None
+                if preserve_scroll and hasattr(self.card_list, 'scroll_to'):
+                    try:
+                        scroll_position = getattr(self.card_list, 'scroll_offset', None)
+                    except:
+                        pass
+                
+                # Salvar animações ativas antes de limpar os cards
+                active_animations = {item_id: True for item_id in self.animated_icons.keys()}
+
+                # Parar animações (não mexe em pending yet)
+                self.stop_all_animations()
+
+                # Preparar novos controles sem chamar update se não estiver anexado
+                self.card_list.controls.clear()
+                self.pending_animated_buttons.clear()
+
+                # Lista regular para todos os itens (sem priorização)
+                regular_items = []
+                
+                # Inicializar estrutura se não existir
+                if not hasattr(self, 'recently_selected_items'):
+                    self.recently_selected_items = {}
+                
+                # Inicializar recently_updated_items se não existir
+                if not hasattr(self, 'recently_updated_items'):
+                    self.recently_updated_items = set()
+                
+                import time
+                current_time = time.time()
+                
+                # Fazer uma cópia dos dados filtrados para evitar mudanças durante iteração
+                filtered_data_copy = list(self.filtered_data)
+                
+                for item in filtered_data_copy:
+                    item_id = item.get("vpcr", item.get("ID", ""))
                     
-            self.card_list.update()
-            
-            # Restaurar posição do scroll se havia uma salva
-            if scroll_position is not None:
+                    # Limpar itens expirados da lista de recentemente selecionados
+                    if item_id in self.recently_selected_items:
+                        if current_time - self.recently_selected_items[item_id] > 30:  # 30 segundos
+                            del self.recently_selected_items[item_id]
+                    
+                    # Não priorizamos mais a ordem - todos os itens são regulares
+                    # Isso mantém a ordem original da lista filtrada
+                    regular_items.append(item)
+                
+                # Usar apenas a lista regular sem priorização
+                all_items = regular_items
+                
+                # Garantir que estamos tratando a mesma lista de dados
+                if len(all_items) != len(filtered_data_copy):
+                    print(f"Aviso: Inconsistência entre filtered_data ({len(filtered_data_copy)}) e all_items ({len(all_items)})")
+                    # Garantir que todos os itens foram processados corretamente
+                    processed_ids = {item.get("vpcr", item.get("ID", "")) for item in all_items}
+                    for item in filtered_data_copy:
+                        item_id = item.get("vpcr", item.get("ID", ""))
+                        if item_id not in processed_ids:
+                            regular_items.append(item)
+                            print(f"Adicionando item perdido: {item_id}")
+                    # Recalcular all_items
+                    all_items = regular_items
+                
+                # Limpar controles e adicionar novos cards
+                self.card_list.controls.clear()
+                for item in all_items:
+                    try:
+                        self.card_list.controls.append(self.create_card(item))
+                    except Exception as e:
+                        print(f"Erro ao criar card para item {item.get('ID', 'unknown')}: {e}")
+
+                # Verificar se ListView está anexada à página
+                attached = False
                 try:
-                    self.card_list.scroll_to(offset=scroll_position)
-                except:
+                    attached = getattr(self.card_list, 'page', None) is not None
+                except Exception:
+                    attached = False
+
+                if attached:
+                    try:
+                        self.card_list.update()
+                        self.start_pending_icon_animations()
+                        self._card_list_refresh_attempts = 0
+                    except Exception as e:
+                        if 'must be added to the page' in str(e).lower():
+                            self._schedule_card_list_refresh(preserve_scroll)
+                        else:
+                            print(f"Erro ao atualizar card_list: {e}")
+                else:
+                    self._schedule_card_list_refresh(preserve_scroll)
+                
+                # Restaurar posição do scroll se havia uma salva
+                if scroll_position is not None:
+                    try:
+                        self.card_list.scroll_to(offset=scroll_position)
+                    except Exception as e:
+                        print(f"Erro ao restaurar posição de scroll: {e}")
+            
+            except Exception as e:
+                print(f"Erro crítico em update_card_list: {e}")
+                import traceback
+                traceback.print_exc()
+                # Tentar reconstruir a lista em caso de erro
+                try:
+                    self.recreate_card_list()
+                except Exception:
                     pass
+            finally:
+                # Libera reentrância e executa update pendente se houver
+                self._updating_card_list = False
+                if getattr(self, '_pending_card_list_update', False):
+                    self._pending_card_list_update = False
+                    self.update_card_list(preserve_scroll=True)
+
+    def recreate_card_list(self):
+        """Recria completamente a card_list em caso de erro crítico"""
+        try:
+            print("Recriando a lista de cards completamente...")
+            
+            # Parar todas as animações primeiro
+            if hasattr(self, 'stop_all_animations'):
+                self.stop_all_animations()
+            
+            # Inicializar estruturas necessárias se não existirem
+            if not hasattr(self, 'recently_updated_items'):
+                self.recently_updated_items = set()
+                
+            if not hasattr(self, 'recently_selected_items'):
+                self.recently_selected_items = {}
+            
+            # Verificar se filtered_data existe e tem dados
+            if not hasattr(self, 'filtered_data') or not self.filtered_data:
+                print("Aviso: filtered_data não existe ou está vazia")
+                if hasattr(self, 'sample_data') and self.sample_data:
+                    self.filtered_data = list(self.sample_data)
+                    print(f"Recriando filtered_data com {len(self.filtered_data)} itens")
+                else:
+                    print("Erro: Não há dados disponíveis para recriar a lista")
+                    return
+            
+            # Recriar a card_list
+            self.card_list = ft.ListView(
+                controls=[],
+                spacing=10,
+                auto_scroll=False,
+                expand=True
+            )
+            
+            # Organizar itens: recentemente atualizados primeiro, depois recentemente selecionados
+            updated_items = []
+            recently_selected_items = []
+            regular_items = []
+            
+            import time
+            current_time = time.time()
+            
+            # Limpar itens expirados da lista de recentemente selecionados
+            expired_items = []
+            for item_id, timestamp in self.recently_selected_items.items():
+                if current_time - timestamp > 30:  # 30 segundos
+                    expired_items.append(item_id)
+            
+            for item_id in expired_items:
+                del self.recently_selected_items[item_id]
+            
+            # Classificar itens para preservar a ordem correta
+            for item in self.filtered_data:
+                item_id = item.get("vpcr", item.get("ID", ""))
+                
+                if item_id in self.recently_updated_items:
+                    updated_items.append(item)
+                elif item_id in self.recently_selected_items:
+                    recently_selected_items.append(item)
+                else:
+                    regular_items.append(item)
+            
+            # Adicionar cards na ordem de prioridade
+            all_items = updated_items + recently_selected_items + regular_items
+            
+            # Recriar todos os cards
+            for item in all_items:
+                try:
+                    new_card = self.create_card(item)
+                    self.card_list.controls.append(new_card)
+                except Exception as e:
+                    print(f"Erro ao recriar card para item {item.get('ID', 'unknown')}: {e}")
+            
+            # Se já houver page e container pai, forçar atualização segura
+            try:
+                if hasattr(self, 'page') and self.page:
+                    # Verificar se temos um container pai para card_list
+                    parent_container = None
+                    for control in self.page.controls:
+                        if isinstance(control, ft.Container) and hasattr(control, 'content'):
+                            if self.card_list in getattr(control, 'controls', []):
+                                parent_container = control
+                                break
+                    
+                    if parent_container:
+                        parent_container.update()
+                    else:
+                        self.card_list.update()
+                    
+                    if hasattr(self, 'start_pending_icon_animations'):
+                        self.start_pending_icon_animations()
+                    
+                    print("Card list recriada com sucesso")
+                else:
+                    print("Não foi possível atualizar a página - ainda não inicializada")
+                    self._schedule_card_list_refresh()
+            except Exception as e:
+                if 'must be added to the page' in str(e).lower():
+                    print("Card list ainda não está anexada à página - agendando refresh")
+                    self._schedule_card_list_refresh()
+                else:
+                    print(f"Erro ao atualizar card_list após recriação: {e}")
+        except Exception as e:
+            print(f"Erro crítico ao recriar card_list: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _schedule_card_list_refresh(self, preserve_scroll=False):
+        """Agenda uma tentativa futura de atualizar a lista quando o controle estiver anexado."""
+        import threading
+        # Limite de tentativas para evitar loop infinito
+        if not hasattr(self, '_card_list_refresh_attempts'):
+            self._card_list_refresh_attempts = 0
+        if self._card_list_refresh_attempts > 10:
+            print("Abortando tentativas de refresh da card_list (limite atingido)")
+            return
+        self._card_list_refresh_attempts += 1
+
+        def retry():
+            try:
+                self.update_card_list(preserve_scroll=preserve_scroll)
+            except Exception as ex:
+                print(f"Tentativa diferida falhou: {ex}")
+
+        threading.Timer(0.08 * self._card_list_refresh_attempts, retry).start()
 
     def update_card_selection_only(self):
         """Atualiza apenas a aparência visual dos cards sem recriar a lista (preserva scroll)"""
@@ -1975,7 +3151,7 @@ class VPCRApp:
             for i, card_control in enumerate(self.card_list.controls):
                 if i < len(self.filtered_data):
                     item = self.filtered_data[i]
-                    item_id = item.get("ID")
+                    item_id = item.get("vpcr", item.get("ID", ""))
                     
                     # Verificar se este card deveria estar selecionado
                     colors = self.theme_manager.get_theme_colors()
@@ -2605,14 +3781,7 @@ class VPCRApp:
                     'is_existing': True
                 })
             
-            # Se não há TODOs, adicionar um campo vazio
-            if not self.temp_todos:
-                self.temp_todos.append({
-                    'id': None,
-                    'description': '',
-                    'completed': False,
-                    'is_existing': False
-                })
+            # Se não há TODOs, deixar a lista vazia (sem campos pré-criados)
             
             def create_todo_row(todo_data, index):
                 """Cria uma linha de TODO com checkbox e campo de texto"""
@@ -2751,8 +3920,28 @@ class VPCRApp:
                                 self.db_manager.update_todo(new_id, completed=True)
                 
                 self.close_todo_dialog()
-                # Atualizar animações dos ícones após salvar
-                self.update_icon_animations()
+                
+                # Atualizar animações dos ícones após salvar (de forma segura)
+                try:
+                    self.update_icon_animations()
+                except Exception as anim_ex:
+                    print(f"Erro ao atualizar animações: {anim_ex}")
+                    # Tentar uma atualização mínima da interface
+                    try:
+                        if hasattr(self, 'page') and self.page:
+                            # Usar um delay para permitir que o close_todo_dialog termine
+                            # e garantir que não há reposicionamento de itens
+                            import threading
+                            def delayed_update():
+                                try:
+                                    if hasattr(self, 'card_list'):
+                                        # Garantir preservação da ordem original com scroll
+                                        self.update_card_list(preserve_scroll=True)
+                                except Exception:
+                                    pass
+                            threading.Timer(0.2, delayed_update).start()
+                    except Exception:
+                        pass
                 
             except Exception as ex:
                 print(f"Erro ao salvar TODOs: {ex}")
@@ -2775,8 +3964,7 @@ class VPCRApp:
             )
             delete_btn = ft.IconButton(
                 ft.Icons.DELETE,
-                icon_color=ft.Colors.RED,
-                disabled=len(self.temp_todos) <= 1
+                icon_color=ft.Colors.RED
             )
             
             # Definir handlers com closure correto
@@ -2792,9 +3980,9 @@ class VPCRApp:
             
             def make_delete_handler(index):
                 def handler(e):
-                    if len(self.temp_todos) > 1:
-                        self.temp_todos.pop(index)
-                        self.refresh_todo_dialog(item, item_id, colors)
+                    # Permitir excluir mesmo se há apenas 1 item (deixar lista vazia)
+                    self.temp_todos.pop(index)
+                    self.refresh_todo_dialog(item, item_id, colors)
                 return handler
             
             checkbox.on_change = make_checkbox_handler(i)
@@ -2828,13 +4016,30 @@ class VPCRApp:
         # Definiremos a cor de fundo uniforme (igual ao diálogo)
         uniform_bg = colors.get("secondary", colors.get("surface", "#2d2d2d"))
 
+        # Criar um container para o título e informações do item
+        header_container = ft.Container(
+            content=ft.Column([
+                ft.Text(
+                    f"VPCR: {item.get('vpcr', item.get('ID', ''))}",
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    color=colors.get("text_container_primary", ft.Colors.WHITE)
+                ),
+                ft.Text(
+                    f"Título: {item.get('Title', 'Item')}",
+                    size=14,
+                    style=ft.TextStyle(italic=True),
+                    color=colors.get("text_container_primary", ft.Colors.WHITE)
+                )
+            ]),
+            bgcolor=colors.get("accent_translucent", ft.Colors.with_opacity(0.1, colors.get("accent", "#324a6e"))),
+            padding=10,
+            border_radius=8,
+            margin=ft.margin.only(bottom=8)
+        )
+
         content_column = ft.Column([
-            ft.Text(
-                f"TODOs para: {item.get('Title', 'Item')}",
-                size=16,
-                weight=ft.FontWeight.BOLD,
-                color=colors.get("text_container_primary", ft.Colors.WHITE)
-            ),
+            header_container,
             ft.Container(
                 content=scroll_area,
                 bgcolor=uniform_bg,
@@ -2857,17 +4062,19 @@ class VPCRApp:
         # Ajustar o container principal de conteúdo para refletir o tema
         themed_content_container = ft.Container(
             content=content_column,
-            width=600,
-            height=450,
+            width=650,
+            height=500,
             bgcolor=dialog_bg,
             padding=12,
             border_radius=10
         )
 
+        # Variáveis removidas, usando diretamente os valores nos componentes
+        
         self.todo_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(
-                f"Gerenciar TODOs - {item.get('Title', 'Item')}",
+                f"Gerenciar TODOs - VPCR: {item.get('vpcr', item.get('ID', ''))}",
                 size=18,
                 weight=ft.FontWeight.BOLD,
                 color=colors.get("text_container_primary", ft.Colors.WHITE)
@@ -2900,11 +4107,16 @@ class VPCRApp:
         try:
             if hasattr(self, 'todo_dialog') and self.todo_dialog:
                 self.page.close(self.todo_dialog)
+                # Limpar referência após fechar
+                self.todo_dialog = None
         except Exception as e:
-            # Fallback method
-            if self.page.dialog:
-                self.page.dialog.open = False
-                self.page.update()
+            try:
+                # Fallback method
+                if hasattr(self, 'page') and self.page and self.page.dialog:
+                    self.page.dialog.open = False
+                    self.page.update()
+            except Exception:
+                pass
 
     def populate_filter_options(self):
         """Popula as opções dos filtros com chips de multiseleção"""
@@ -2978,12 +4190,7 @@ class VPCRApp:
                         include_item = False
                         break
             
-            # Aplicar filtro de TODOs se ativo
-            if include_item and self.show_only_active_todos:
-                item_id = item.get("ID")
-                has_incomplete_todos = self.db_manager.has_incomplete_todos(item_id)
-                if not has_incomplete_todos:
-                    include_item = False
+            # Remover filtro de TODOs - todos os itens serão mostrados
             
             if include_item:
                 filtered_data.append(item)
@@ -3106,9 +4313,7 @@ class VPCRApp:
             self.filter_selections[key].clear()
             self.update_filter_display(key)
         
-        # Reset do switch de TODOs ativos
-        self.show_only_active_todos = False
-        self.todos_filter_switch.value = False
+        # Removido reset do switch de TODOs - não existe mais
         
         self.filter_data()
 
@@ -3171,50 +4376,84 @@ class VPCRApp:
 
     def select_item(self, item):
         """Atualiza os campos detalhados com base no item selecionado"""
-        self.selected_item = item
-        self.selected_item_id = item.get("ID")
+        try:
+            self.selected_item = item
+            self.selected_item_id = item.get("ID")
+            
+            # Obter ID do item de forma consistente
+            item_id = item.get("vpcr", item.get("ID", ""))
+            
+            # Inicializar estruturas necessárias se não existirem
+            if not hasattr(self, 'recently_updated_items'):
+                self.recently_updated_items = set()
+            
+            if not hasattr(self, 'recently_selected_items'):
+                self.recently_selected_items = {}
+                
+            # Verificar se o item tinha o ícone NEW e remover
+            icon_removed = False
+            if item_id in self.recently_updated_items:
+                self.recently_updated_items.remove(item_id)
+                icon_removed = True
+                print(f"Ícone NEW removido do item: {item_id}")
+                
+                # Atualizar imediatamente o card para mostrar a mudança de cor do sino
+                self.update_card_list(preserve_scroll=True)
+            
+            # Mapear dados do item para detail_fields
+            self.detail_fields.update({
+                # VPCR Overview
+                "Title": item.get("Title", ""),
+                "Initiated Date": item.get("Initiated Date", "N/A"),
+                "Last Update": item.get("Last Update", "N/A"),
+                "Closed Date": item.get("Closed Date", ""),
+                "Category": item.get("Category", "N/A"),
+                "Supplier": item.get("Supplier", ""),
+                "PNs": item.get("PNs", "N/A"),
+                "Plants Affected": item.get("Plants Affected", "N/A"),
+                # Request & Responsibility  
+                "Requestor": item.get("Requestor", ""),
+                "Sourcing": item.get("Sourcing Manager", ""),
+                "SQIE": item.get("SQIE", "N/A"),
+                "Continuity": item.get("Continuity", ""),
+                # Documentation (campos genéricos)
+                "RFQ": item.get("RFQ", "N/A"),
+                "DRA": item.get("DRA", "N/A"),
+                "DQR": item.get("DQR", "N/A"),
+                "LOI": item.get("LOI", "N/A"),
+                "Tooling": item.get("Tooling", "N/A"),
+                "Drawing": item.get("Drawing", "N/A"),
+                "PO Alfa": item.get("PO Alfa", ""),
+                "SR": item.get("SR", ""),
+                "Deviation": item.get("Deviation", ""),
+                "PO Beta": item.get("PO Beta", ""),
+                "PPAP": item.get("PPAP", ""),
+                "GBPA": item.get("GBPA", ""),
+                "EDI": item.get("EDI", ""),
+                "SCR": item.get("SCR", ""),
+                # L2 fields
+                "Comments": item.get("Comments", ""),
+                "Log": item.get("Log", f"Selecionado: {item.get('Title', 'Item')}")
+            })
+            
+            # Atualizar a UI dos containers direitos se eles existirem
+            self.update_detail_containers()
+            
+            # Atualizar a aparência do card selecionado
+            try:
+                self.update_card_selection_only()
+            except Exception as e:
+                print(f"Erro ao atualizar seleção de cards: {e}")
+                
+            # Se um ícone NEW foi removido, simplesmente atualizar a lista sem mudar posição
+            if icon_removed:
+                # Atualizar a lista de cards para refletir a mudança no ícone
+                self.update_card_list(preserve_scroll=True)
         
-        # Mapear dados do item para detail_fields
-        self.detail_fields.update({
-            # VPCR Overview
-            "Title": item.get("Title", ""),
-            "Initiated Date": item.get("Initiated Date", "N/A"),
-            "Last Update": item.get("Last Update", "N/A"),
-            "Closed Date": item.get("Closed Date", ""),
-            "Category": item.get("Category", "N/A"),
-            "Supplier": item.get("Supplier", ""),
-            "PNs": item.get("PNs", "N/A"),
-            "Plants Affected": item.get("Plants Affected", "N/A"),
-            # Request & Responsibility  
-            "Requestor": item.get("Requestor", ""),
-            "Sourcing": item.get("Sourcing Manager", ""),
-            "SQIE": item.get("SQIE", "N/A"),
-            "Continuity": item.get("Continuity", ""),
-            # Documentation (campos genéricos)
-            "RFQ": item.get("RFQ", "N/A"),
-            "DRA": item.get("DRA", "N/A"),
-            "DQR": item.get("DQR", "N/A"),
-            "LOI": item.get("LOI", "N/A"),
-            "Tooling": item.get("Tooling", "N/A"),
-            "Drawing": item.get("Drawing", "N/A"),
-            "PO Alfa": item.get("PO Alfa", ""),
-            "SR": item.get("SR", ""),
-            "Deviation": item.get("Deviation", ""),
-            "PO Beta": item.get("PO Beta", ""),
-            "PPAP": item.get("PPAP", ""),
-            "GBPA": item.get("GBPA", ""),
-            "EDI": item.get("EDI", ""),
-            "SCR": item.get("SCR", ""),
-            # L2 fields
-            "Comments": item.get("Comments", ""),
-            "Log": item.get("Log", f"Selecionado: {item.get('Title', 'Item')}")
-        })
-        
-        # Atualizar a UI dos containers direitos se eles existirem
-        self.update_detail_containers()
-        
-        # Atualizar apenas a aparência dos cards sem recriar a lista
-        self.update_card_selection_only()
+        except Exception as e:
+            print(f"Erro ao selecionar item: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Garantir que painel direito mostre os detalhes agora
         try:
@@ -3227,13 +4466,45 @@ class VPCRApp:
 
     def update_detail_containers(self):
         """Atualiza os containers de detalhes após seleção de item"""
-        if hasattr(self, 'detail_overview') and hasattr(self, 'detail_request') and hasattr(self, 'detail_doc') and hasattr(self, 'detail_log'):
-            # Atualizar overview
-            self.update_overview_container()
-            self.update_request_container()
-            self.update_doc_container()
-            self.update_l2_containers()
-            self.page.update()
+        try:
+            if hasattr(self, 'detail_overview') and hasattr(self, 'detail_request') and hasattr(self, 'detail_doc') and hasattr(self, 'detail_log'):
+                # Atualizar overview
+                self.update_overview_container()
+                self.update_request_container()
+                self.update_doc_container()
+                self.update_l2_containers()
+                # Atualizar linha de status baseada no item selecionado
+                self.update_status_line()
+                
+                # Verificar se a página está disponível antes de atualizar
+                if hasattr(self, 'page') and self.page:
+                    self.page.update()
+        except Exception as e:
+            # Em caso de erro, tentar atualizar apenas os componentes individuais
+            try:
+                if hasattr(self, 'right_panel') and self.right_panel:
+                    self.right_panel.update()
+            except Exception:
+                pass
+
+    def update_status_line(self):
+        """Atualiza a linha de status baseada no item selecionado"""
+        try:
+            if hasattr(self, 'status_line') and self.status_line and hasattr(self, 'page') and self.page:
+                # Verificar se o status_line está na página antes de atualizar
+                if hasattr(self.status_line, 'page') and self.status_line.page:
+                    # Reconstruir a linha de status com base no novo item selecionado
+                    new_status_line = self.build_status_line()
+                    # Atualizar o conteúdo da linha de status existente
+                    self.status_line.content = new_status_line.content
+                    self.status_line.bgcolor = new_status_line.bgcolor
+                    self.status_line.padding = new_status_line.padding
+                    self.status_line.border_radius = new_status_line.border_radius
+                    self.status_line.margin = new_status_line.margin
+                    self.status_line.update()
+        except Exception as e:
+            # Silencioso para evitar spam no console durante inicialização
+            pass
 
     def update_overview_container(self):
         """Atualiza container VPCR Overview"""
@@ -3374,45 +4645,101 @@ class VPCRApp:
             
             # Encontrar item base em sample_data
             updated_data = {}
+            changes_made = False
+            
             for base in self.sample_data:
                 if base.get("ID") == item_id:
-                    # Campos editáveis que podem ser salvos
+                    # Todos os campos editáveis que podem ser salvos
                     editable_fields = [
-                        "Comments", "Continuity", "Link"
-                    ]  # Expandir aqui se mais campos ficarem editáveis
+                        "Comments", "Continuity", "Link",  # Campos principais editáveis
+                        # Campos de Documentation
+                        "RFQ", "DRA", "DQR", "LOI", "Tooling", "Drawing",
+                        "PO Alfa", "SR", "Deviation", "PO Beta", "PPAP", 
+                        "GBPA", "EDI", "SCR"
+                    ]
                     
-                    for f in editable_fields:
-                        if f in self.detail_fields:
-                            # Mapear campo para nome do banco de dados
-                            db_field_map = {
-                                'Comments': 'comments',
-                                'Continuity': 'continuity', 
-                                'Link': 'link_vpcr'
-                            }
-                            db_field = db_field_map.get(f, f.lower())
-                            
-                            old_value = existing_item.get(db_field, '') if existing_item else base.get(f, '')
-                            new_value = self.detail_fields[f]
-                            
-                            # Atualizar em sample_data
-                            base[f] = new_value
-                            updated_data[f] = new_value
-                            
-                            # Registrar mudança no log se houve alteração
-                            if str(old_value) != str(new_value):
-                                self.db_manager.log_change(
-                                    item_id=str(item_id), 
-                                    field_name=db_field, 
-                                    old_value=old_value, 
-                                    new_value=new_value, 
-                                    change_type='manual_update'
-                                )
+                    # Mapear campos para nomes do banco de dados
+                    db_field_map = {
+                        'Comments': 'comments',
+                        'Continuity': 'continuity', 
+                        'Link': 'link_vpcr',
+                        'RFQ': 'rfq',
+                        'DRA': 'dra',
+                        'DQR': 'dqr',
+                        'LOI': 'loi',
+                        'Tooling': 'tooling',
+                        'Drawing': 'drawing',
+                        'PO Alfa': 'po_alfa',
+                        'SR': 'sr_roc',
+                        'Deviation': 'deviation',
+                        'PO Beta': 'po_beta',
+                        'PPAP': 'ppap',
+                        'GBPA': 'gbpa',
+                        'EDI': 'edi',
+                        'SCR': 'scr_item_id'
+                    }
                     
-                    # Adicionar ID aos dados para atualização
-                    updated_data['ID'] = str(item_id)
+                    # Usar uma única conexão para todas as operações
+                    conn = self.db_manager.get_connection()
                     
-                    # Atualizar no banco de dados
-                    self.db_manager.upsert_item(updated_data)
+                    try:
+                        for f in editable_fields:
+                            if f in self.detail_fields:
+                                db_field = db_field_map.get(f, f.lower())
+                                
+                                old_value = existing_item.get(db_field, '') if existing_item else base.get(f, '')
+                                new_value = self.detail_fields[f]
+                                
+                                # Normalizar valores para comparação (tratar None como string vazia)
+                                old_value_clean = str(old_value).strip() if old_value else ""
+                                new_value_clean = str(new_value).strip() if new_value else ""
+                                
+                                # Atualizar em sample_data
+                                base[f] = new_value
+                                updated_data[f] = new_value
+                                
+                                # Registrar mudança no log APENAS se houve alteração real
+                                if old_value_clean != new_value_clean:
+                                    self.db_manager.log_change(
+                                        item_id=str(item_id), 
+                                        field_name=db_field, 
+                                        old_value=old_value_clean, 
+                                        new_value=new_value_clean, 
+                                        change_type='manual_update',
+                                        conn=conn  # Usar mesma conexão para evitar duplicação
+                                    )
+                                    changes_made = True
+                        
+                        # Adicionar ID aos dados para atualização
+                        updated_data['ID'] = str(item_id)
+                        
+                        # Atualizar diretamente no banco usando SQL específico
+                        # Preparar campos e valores para UPDATE
+                        update_fields = []
+                        update_values = []
+                        
+                        for field, value in updated_data.items():
+                            if field != 'ID':  # Não atualizar o ID
+                                db_field = db_field_map.get(field, field.lower())
+                                update_fields.append(f"{db_field} = ?")
+                                update_values.append(value)
+                        
+                        # Executar UPDATE apenas se há campos para atualizar
+                        if update_fields:
+                            update_values.append(str(item_id))  # WHERE vpcr = ?
+                            update_sql = f"UPDATE vpcr SET {', '.join(update_fields)} WHERE vpcr = ?"
+                            cursor = conn.cursor()
+                            cursor.execute(update_sql, update_values)
+                            print(f"DEBUG: Executou UPDATE para {item_id} com {len(update_fields)} campos")
+                        
+                        conn.commit()
+                        
+                    except Exception as e:
+                        conn.rollback()
+                        raise e
+                    finally:
+                        conn.close()
+                    
                     break
                     
             # Remover do conjunto de sujos
@@ -3428,6 +4755,27 @@ class VPCRApp:
                     btn.update()
                 except Exception:
                     pass
+            
+            # Recarregar dados do banco para sincronizar e atualizar display
+            try:
+                updated_item = self.db_manager.get_item_from_db(item_id)
+                if updated_item and hasattr(self, 'selected_item') and self.selected_item:
+                    if self.selected_item.get("ID") == item_id:
+                        # Atualizar item selecionado com dados do banco
+                        for key, value in updated_item.items():
+                            # Mapear campos do banco de volta para display
+                            reverse_map = {v: k for k, v in db_field_map.items()}
+                            display_field = reverse_map.get(key, key)
+                            if display_field in self.selected_item:
+                                self.selected_item[display_field] = value
+                        
+                        # Forçar atualização do painel de detalhes
+                        if hasattr(self, 'detail_view') and self.detail_view:
+                            self.detail_view.update()
+                        
+                        print(f"DEBUG: Item {item_id} recarregado e display atualizado")
+            except Exception as e:
+                print(f"DEBUG: Erro ao recarregar item {item_id}: {e}")
                     
             # Feedback visual usando a notificação personalizada
             self.show_custom_notification(
@@ -3435,6 +4783,12 @@ class VPCRApp:
                 color=ft.Colors.GREEN_400,
                 duration=2000
             )
+            
+            # Debug: mostrar se houve mudanças detectadas
+            if changes_made:
+                print(f"DEBUG: Mudanças detectadas e logs criados para {item_id}")
+            else:
+                print(f"DEBUG: Nenhuma mudança detectada para {item_id}, mas dados foram atualizados")
             
         except Exception as ex:
             print(f"Erro ao salvar card: {ex}")
@@ -3517,15 +4871,7 @@ class VPCRApp:
                     self.filter_status_chips,
                     self.filter_supplier_chips,
                     self.filter_requestor_chips,
-                    self.filter_continuity_chips,
-                    # Switch de TODOs ativos na mesma linha
-                    ft.Container(
-                        content=self.todos_filter_switch,
-                        padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                        bgcolor=colors["field_bg"],
-                        border=ft.border.all(1, colors["field_border"]),
-                        border_radius=8,
-                    )
+                    self.filter_continuity_chips
                 ], spacing=8, wrap=False, scroll=ft.ScrollMode.AUTO)
             ], spacing=8)
         ], spacing=10)
@@ -3893,95 +5239,13 @@ class VPCRApp:
             expand=True  # Log expandirá para ocupar a largura disponível
         )
 
-        # Linha de Status com ícones e texto abaixo
-        status_items = [
-            ("Draft", True),
-            ("Preliminary Change\nManager Review", True),
-            ("Preliminary\nReview", True), 
-            ("Cross Functional\nReview", False),
-            ("Secondary Change\nManager Review", False),
-            ("Pending Resource\nAssignment", False),
-            ("Cost and Lead Time\nAnalysis", False),
-            ("Engineering\nWork in Progress", False),
-            ("Purchasing\nWork in Progress", False),
-            ("Pending Plant\nImplementation", False),
-            ("Work\nComplete", False)
-        ]
-        
-        # Criar ícones para cada status
-        status_icons = []
-        for status_text, is_completed in status_items:
-            # Texto exibido: remover quebras manuais e deixar o wrap natural em até 2 linhas
-            display_text = status_text.replace("\n", " ")
-            # Ícone de status
-            icon = ft.Icon(
-                ft.Icons.CHECK_CIRCLE if is_completed else ft.Icons.RADIO_BUTTON_UNCHECKED,
-                color=ft.Colors.GREEN if is_completed else colors["surface"],  # Cor do tema para elementos desativados
-                size=22  # ligeiramente menor para reduzir altura total
-            )
-
-            status_icons.append(
-                ft.Container(
-                    content=ft.Column([
-                        icon,
-                        ft.Container(
-                            content=ft.Text(
-                                display_text,
-                                size=10,
-                                color=colors["text_container_primary"],
-                                text_align=ft.TextAlign.CENTER,
-                                max_lines=2,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                                tooltip=status_text
-                            ),
-                            height=28,  # altura aproximada para 2 linhas de fonte size=9
-                            alignment=ft.alignment.center
-                        )
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
-                    padding=ft.padding.symmetric(horizontal=4, vertical=2),
-                    alignment=ft.alignment.center,
-                    expand=True
-                )
-            )
-
-        # Criar controles finais com linhas conectando os ícones
-        final_status_controls = []
-        for i, icon_container in enumerate(status_icons):
-            final_status_controls.append(icon_container)
-            # Adicionar linha entre ícones (exceto após o último)
-            if i < len(status_icons) - 1:
-                # Verificar se ambos os ícones adjacentes estão verdes
-                current_completed = status_items[i][1]
-                next_completed = status_items[i + 1][1]
-                line_color = ft.Colors.GREEN if (current_completed and next_completed) else colors["surface"]
-                
-                # Linha conectando os ícones
-                connecting_line = ft.Container(
-                    content=ft.Divider(height=2, color=line_color),
-                    width=40,  # Largura maior da linha
-                    alignment=ft.alignment.center,
-                    height=22,  # Altura do ícone para alinhar com o centro
-                    padding=ft.padding.only(top=10)  # Padding para passar pelo centro do ícone
-                )
-                final_status_controls.append(connecting_line)
-
-        # Container da linha de status agora sem expand para abraçar o conteúdo (altura mínima)
-        status_line = ft.Container(
-            content=ft.Row(
-                controls=final_status_controls,
-                spacing=0,  # Espaçamento zero pois as linhas têm largura própria
-                alignment=ft.MainAxisAlignment.START
-            ),
-            bgcolor=colors["secondary"],
-            padding=6,  # Reduzido de 12 para 6
-            border_radius=8,
-            margin=ft.margin.only(bottom=10)
-        )
+        # Linha de Status com ícones dinâmicos baseados no status atual
+        self.status_line = self.build_status_line()
 
         # Layout final: Status line acima, depois Overview à esquerda e coluna direita com Request/Documentation/Log
         main_content = ft.Container(
             content=ft.Column([
-                status_line,  # Linha de status no topo
+                self.status_line,  # Linha de status no topo
                 ft.Row([
                     left_top,  # Overview - toda altura à esquerda
                     ft.Column([

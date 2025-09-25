@@ -7,3 +7,6 @@ dist/
 *.xlsx
 *.xlsm
 *.xlsb
+*.db-shm
+*.db-wal
+*.pyc
