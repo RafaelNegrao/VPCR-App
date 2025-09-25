@@ -408,7 +408,7 @@ class FileImportManager:
                 self.progress_bar,
                 self.progress_details,
                 ft.Divider(),
-                ft.Text("Log de importação:", size=12, weight=ft.FontWeight.BOLD),
+                ft.Text("Log de importação:", size=self.theme_manager.font_size, weight=ft.FontWeight.BOLD),
                 ft.Container(
                     content=self.progress_log,
                     bgcolor=colors['secondary'],
@@ -699,8 +699,8 @@ class FileImportManager:
                 self._show_import_results(total_lines, total_imported, total_updated, len(self.validated_files), len(errors))
                 
                 # Usar notificação de sucesso ou warning se houver erros
-                color = ft.Colors.GREEN_400 if not errors else ft.Colors.ORANGE_400
-                self.app.show_custom_notification(success_message, color=color, duration=5000)
+                kind = "success" if not errors else "warn"
+                self.app.notify(success_message, kind=kind, auto_hide=5000)
                     
             else:
                 # Mostrar resultado de falha na própria janela
@@ -720,7 +720,7 @@ class FileImportManager:
                     if len(errors) > 3:
                         error_message += f"\n... e mais {len(errors) - 3} erro(s)"
                 
-                self.app.show_custom_notification(error_message, color=ft.Colors.RED_400, duration=6000)
+                self.app.notify(error_message, kind="error", auto_hide=6000)
                 
                 # Adicionar botão "Fechar" na janela de progresso
                 self._add_close_button_to_progress()
@@ -921,34 +921,64 @@ class DatabaseManager:
             return cursor.fetchone()[0] > 0
     
     def convert_date_format(self, date_str):
-        """Converte data de m/d/yyyy para dd/mm/yyyy"""
+        """Converte data de m/d/yyyy para dd/mm/yyyy - Versão melhorada"""
         try:
             import pandas as pd
         except ImportError:
             pd = None
             
-        if not date_str or (pd and pd.isna(date_str)):
+        if not date_str or (pd and pd.isna(date_str)) or date_str in ['', 'N/A', None]:
             return ""
         
         try:
-            if isinstance(date_str, str):
-                # Se já está no formato dd/mm/yyyy, retorna como está
-                if '/' in date_str and len(date_str.split('/')) == 3:
-                    parts = date_str.split('/')
+            # Se for datetime do pandas ou similar
+            if hasattr(date_str, 'strftime'):
+                return date_str.strftime('%d/%m/%Y')
+            
+            # Converter para string e limpar
+            date_str = str(date_str).strip()
+            
+            if not date_str:
+                return ""
+            
+            # Tentar diferentes formatos de entrada usando datetime.strptime
+            date_formats = [
+                '%m/%d/%Y',    # 12/25/2023
+                '%m/%d/%y',    # 12/25/23  
+                '%d/%m/%Y',    # 25/12/2023 (já no formato correto)
+                '%d/%m/%y',    # 25/12/23 (já no formato correto)
+                '%Y-%m-%d',    # 2023-12-25 (ISO format)
+                '%d-%m-%Y',    # 25-12-2023
+                '%m-%d-%Y'     # 12-25-2023
+            ]
+            
+            for format_str in date_formats:
+                try:
+                    parsed_date = datetime.strptime(date_str, format_str)
+                    # Sempre retornar no formato dd/mm/yyyy
+                    return parsed_date.strftime('%d/%m/%Y')
+                except ValueError:
+                    continue
+            
+            # Se nenhum formato funcionou, tentar lógica de detecção de formato
+            if '/' in date_str and len(date_str.split('/')) == 3:
+                parts = date_str.split('/')
+                if len(parts) == 3 and all(part.isdigit() for part in parts):
+                    # Se primeiro número > 12, provavelmente já está em dd/mm/yyyy
                     if len(parts[0]) <= 2 and len(parts[1]) <= 2 and len(parts[2]) == 4:
-                        # Pode estar em m/d/yyyy
-                        if int(parts[0]) > 12:  # Dia > 12, então está em d/m/yyyy
+                        if int(parts[0]) > 12:  # Dia > 12, então está em dd/mm/yyyy
                             return date_str
                         else:
                             # Assumir m/d/yyyy e converter para dd/mm/yyyy
                             month, day, year = parts
                             return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
-                return date_str
-            else:
-                # Se for datetime do pandas
-                return date_str.strftime('%d/%m/%Y')
+            
+            # Se chegou até aqui, não conseguiu converter
+            print(f"DEBUG: Não foi possível converter a data: {date_str}")
+            return date_str  # Retornar original se não conseguir converter
+            
         except Exception as e:
-            print(f"Erro ao converter data '{date_str}': {e}")
+            print(f"DEBUG: Erro ao converter data '{date_str}': {e}")
             return str(date_str) if date_str else ""
     
     def format_date_for_display(self, date_str):
@@ -983,24 +1013,28 @@ class DatabaseManager:
         if str(old_value) == str(new_value):
             return
         
+        # Obter data/hora local atual
+        from datetime import datetime
+        local_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
         # Usar conexão fornecida ou criar nova
         if conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (item_id, field_name, str(old_value) if old_value else '', 
-                  str(new_value) if new_value else '', change_type))
+                  str(new_value) if new_value else '', change_type, local_datetime))
         else:
             connection = None
             try:
                 connection = self.get_connection()
                 cursor = connection.cursor()
                 cursor.execute('''
-                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', (item_id, field_name, str(old_value) if old_value else '', 
-                      str(new_value) if new_value else '', change_type))
+                      str(new_value) if new_value else '', change_type, local_datetime))
                 connection.commit()
             except Exception as e:
                 if connection:
@@ -1114,11 +1148,12 @@ class DatabaseManager:
                         update_pairs.append(f'{db_field} = ?')
                         update_values.append(new_value)
                         # Registrar mudança no log na mesma transação
+                        local_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         cursor.execute('''
-                            INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
-                            VALUES (?, ?, ?, ?, ?)
+                            INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                            VALUES (?, ?, ?, ?, ?, ?)
                         ''', (item_id, db_field, str(old_value) if old_value else '', 
-                              str(new_value) if new_value else '', 'import_update'))
+                              str(new_value) if new_value else '', 'import_update', local_datetime))
                 
                 if update_pairs:
                     update_sql = f'UPDATE vpcr SET {", ".join(update_pairs)} WHERE vpcr = ?'
@@ -1134,10 +1169,11 @@ class DatabaseManager:
                 insert_sql = f'INSERT OR REPLACE INTO vpcr ({field_names}) VALUES ({placeholders})'
                 cursor.execute(insert_sql, values)
                 # Registrar criação no log na mesma transação
+                local_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 cursor.execute('''
-                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (item_id, 'ITEM_CREATED', '', 'Item criado via importação', 'import_create'))
+                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (item_id, 'ITEM_CREATED', '', 'Item criado via importação', 'import_create', local_datetime))
             
             # Commit da transação
             conn.commit()
@@ -1246,13 +1282,21 @@ class DatabaseManager:
                                     field_changes.append((db_field, old_value, new_value))
                                     
                                     # Registrar log da mudança
+                                    local_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                                     cursor.execute('''
-                                        INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
-                                        VALUES (?, ?, ?, ?, ?)
-                                    ''', (vpcr_project_id, db_field, old_str, new_str, 'update'))
+                                        INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    ''', (vpcr_project_id, db_field, old_str, new_str, 'update', local_datetime))
                                     logs_created += 1
                             
                             if changes_found:
+                                # Verificar se houve mudança de status para "Work Complete"
+                                status_changed_to_complete = False
+                                for db_field, old_val, new_val in field_changes:
+                                    if db_field == 'vpcr_status' and str(new_val).strip() == 'Work Complete':
+                                        status_changed_to_complete = True
+                                        break
+                                
                                 # Atualizar apenas campos que mudaram
                                 update_fields = []
                                 update_values = []
@@ -1260,6 +1304,24 @@ class DatabaseManager:
                                 for db_field, old_val, new_val in field_changes:
                                     update_fields.append(f'{db_field} = ?')
                                     update_values.append(new_val)
+                                
+                                # Se status mudou para "Work Complete", definir closed_date automaticamente
+                                if status_changed_to_complete:
+                                    current_date = datetime.now().strftime('%d/%m/%Y')
+                                    update_fields.append('closed_date = ?')
+                                    update_values.append(current_date)
+                                    
+                                    # Registrar log da mudança automática do closed_date
+                                    local_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                    old_closed_date = existing_item.get('closed_date', '')
+                                    cursor.execute('''
+                                        INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    ''', (vpcr_project_id, 'closed_date', old_closed_date, current_date, 'auto_complete', local_datetime))
+                                    logs_created += 1
+                                    
+                                    if progress_callback:
+                                        progress_callback(f"Linha {index + 1}: {vpcr_project_id} - Status alterado para 'Work Complete', closed_date definido automaticamente para {current_date}")
                                 
                                 if update_fields:
                                     update_sql = f'UPDATE vpcr SET {", ".join(update_fields)} WHERE vpcr = ?'
@@ -1274,6 +1336,14 @@ class DatabaseManager:
                                 if progress_callback:
                                     progress_callback(f"Linha {index + 1}: {vpcr_project_id} - Sem alterações")
                         else:
+                            # Item novo - verificar se já vem com status "Work Complete"
+                            if excel_data.get('vpcr_status', '').strip() == 'Work Complete' and not excel_data.get('closed_date', '').strip():
+                                # Se status é "Work Complete" mas não tem closed_date, definir automaticamente
+                                current_date = datetime.now().strftime('%d/%m/%Y')
+                                excel_data['closed_date'] = current_date
+                                if progress_callback:
+                                    progress_callback(f"Linha {index + 1}: {vpcr_project_id} - Novo item com status 'Work Complete', closed_date definido automaticamente para {current_date}")
+                            
                             # Item novo - inserir e registrar log "initial input"
                             fields = list(excel_data.keys())
                             placeholders = ', '.join(['?' for _ in fields])
@@ -1284,11 +1354,20 @@ class DatabaseManager:
                             cursor.execute(insert_sql, values)
                             
                             # Registrar log "initial input"
+                            local_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             cursor.execute('''
-                                INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type)
-                                VALUES (?, ?, ?, ?, ?)
-                            ''', (vpcr_project_id, 'ITEM_CREATED', '', 'initial input', 'create'))
+                                INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            ''', (vpcr_project_id, 'ITEM_CREATED', '', 'initial input', 'create', local_datetime))
                             logs_created += 1
+                            
+                            # Se closed_date foi definido automaticamente, registrar também esse log
+                            if excel_data.get('vpcr_status', '').strip() == 'Work Complete' and excel_data.get('closed_date'):
+                                cursor.execute('''
+                                    INSERT INTO log_table (item_id, field_name, old_value, new_value, change_type, change_date)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                ''', (vpcr_project_id, 'closed_date', '', excel_data['closed_date'], 'auto_complete', local_datetime))
+                                logs_created += 1
                             
                             imported_count += 1
                             if progress_callback:
@@ -1407,6 +1486,8 @@ class DatabaseManager:
             
             return formatted_items
     
+
+
     def get_change_log(self, item_id=None, limit=100):
         """Retorna o log de alterações"""
         with self.get_connection() as conn:
@@ -1433,6 +1514,8 @@ class ThemeManager:
     """Gerenciador de temas da aplicação"""
     
     def __init__(self):
+        self.auto_save_enabled = False  # Auto-save desabilitado por padrão
+        self.load_auto_save_setting()   # Carrega configuração salva
         self.themes = {
             "dark": {
                 "primary": "#181818",
@@ -1459,7 +1542,7 @@ class ThemeManager:
                 "surface": "#6272a4",
                 "on_surface": "#f8f8f2",
                 "on_primary": "#f8f8f2",
-                "accent": "#a676ff",
+                "accent": "#b790ff",
                 "card_bg": "#44475a",
                 "border": "#6272a4",
                 "text_primary": "#f8f8f2",           # Texto fora de containers
@@ -1565,6 +1648,36 @@ class ThemeManager:
         except:
             self.font_size = 14
 
+    def set_auto_save(self, enabled):
+        """Define se o auto-save está habilitado"""
+        self.auto_save_enabled = enabled
+        self.save_auto_save_setting()
+    
+    def save_auto_save_setting(self):
+        """Salva a configuração de auto-save em arquivo"""
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            config_dir = os.path.join(appdata, 'VPCR App', 'settings')
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, 'auto_save_config.json')
+            with open(config_path, "w", encoding='utf-8') as f:
+                json.dump({"auto_save_enabled": self.auto_save_enabled}, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+    
+    def load_auto_save_setting(self):
+        """Carrega a configuração de auto-save salva"""
+        try:
+            appdata = os.getenv('APPDATA') or os.path.expanduser('~')
+            config_dir = os.path.join(appdata, 'VPCR App', 'settings')
+            config_path = os.path.join(config_dir, 'auto_save_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.auto_save_enabled = config.get("auto_save_enabled", False)
+        except:
+            self.auto_save_enabled = False
+
 class VPCRApp:
     def __init__(self):
         self.theme_manager = ThemeManager()
@@ -1608,29 +1721,29 @@ class VPCRApp:
         self._card_list_refresh_attempts = 0
         
         # Campos detalhados (valores mostrados no painel direito)
-        # Inicializar com valores de exemplo; chaves seguem os rótulos originais
+        # Inicializar vazio - será preenchido quando um item for selecionado
         self.detail_fields = {
             # VPCR Overview
-            "Title": "Item 1",
-            "Initiated Date": "2025-01-01",
-            "Last Update": "2025-01-10",
+            "Title": "",
+            "Initiated Date": "",
+            "Last Update": "",
             "Closed Date": "",
-            "Category": "Category A", 
-            "Supplier": "Supplier A",
-            "PNs": "PN-123; PN-456",
-            "Plants Affected": "Plant A",
+            "Category": "", 
+            "Supplier": "",
+            "PNs": "",
+            "Plants Affected": "",
             # Request & Responsibility
-            "Requestor": "John",
-            "Sourcing": "Alice",
-            "SQIE": "SQIE-1",
-            "Continuity": "High",
+            "Requestor": "",
+            "Sourcing": "",
+            "SQIE": "",
+            "Continuity": "",
             # Documentation
-            "RFQ": "Yes",
-            "DRA": "No",
-            "DQR": "No",
-            "LOI": "No",
-            "Tooling": "N/A",
-            "Drawing": "Rev A",
+            "RFQ": "",
+            "DRA": "",
+            "DQR": "",
+            "LOI": "",
+            "Tooling": "",
+            "Drawing": "",
             "PO Alfa": "",
             "SR": "",
             "Deviation": "",
@@ -1641,7 +1754,7 @@ class VPCRApp:
             "SCR": "",
             # L2 fields
             "Comments": "",
-            "Log": "2025-01-01 - Created\n2025-01-10 - Updated"
+            "Log": ""
         }
         # Item selecionado atualmente
         self.selected_item = None
@@ -2088,23 +2201,12 @@ class VPCRApp:
                 print(f"Dados carregados na inicialização: {len(db_items)} itens do banco de dados")
                 return db_items
             else:
-                print("Nenhum item encontrado no banco de dados, usando dados de exemplo")
-                # Retornar dados de exemplo se não houver dados no banco
-                return [
-                    {"ID": 1, "Title": "Item 1", "Description": "Descrição do item 1", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High", "vpcr": "VPCR00001"},
-                    {"ID": 2, "Title": "Item 2", "Description": "Descrição do item 2", "Status": "Inativo", "Sourcing Manager": "Bob", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low", "vpcr": "VPCR00002"},
-                    {"ID": 3, "Title": "Item 3", "Description": "Descrição do item 3", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier C", "Requestor": "Peter", "Continuity": "Medium", "vpcr": "VPCR00003"},
-                    {"ID": 4, "Title": "Item 4", "Description": "Descrição do item 4", "Status": "Pendente", "Sourcing Manager": "Carlos", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High", "vpcr": "VPCR00004"},
-                    {"ID": 5, "Title": "Item 5", "Description": "Outro item", "Status": "Ativo", "Sourcing Manager": "Diana", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low", "vpcr": "VPCR00005"},
-                ]
+                print("Nenhum item encontrado no banco de dados")
+                return []
                 
         except Exception as e:
             print(f"Erro ao carregar dados do banco na inicialização: {e}")
-            # Retornar dados de exemplo em caso de erro
-            return [
-                {"ID": 1, "Title": "Item 1", "Description": "Descrição do item 1", "Status": "Ativo", "Sourcing Manager": "Alice", "Supplier": "Supplier A", "Requestor": "John", "Continuity": "High", "vpcr": "VPCR00001"},
-                {"ID": 2, "Title": "Item 2", "Description": "Descrição do item 2", "Status": "Inativo", "Sourcing Manager": "Bob", "Supplier": "Supplier B", "Requestor": "Mary", "Continuity": "Low", "vpcr": "VPCR00002"},
-            ]
+            return []
 
     def refresh_data_from_db(self):
         """Recarrega os dados do banco de dados para a aplicação"""
@@ -2572,7 +2674,7 @@ class VPCRApp:
         # Verificar se este item está selecionado
         item_id = item.get("ID")
         is_selected = self.selected_item_id == item_id
-        card_bg_color = colors["selected_card"] if is_selected else colors["card_bg"]
+        card_bg_color = colors["selected_card"] if is_selected else colors["field_bg"]
 
         # Verificar se o card está expandido
         is_expanded = item_id in self.expanded_cards
@@ -2754,9 +2856,16 @@ class VPCRApp:
         def handle_card_click(e):
             """Handler para clique no card"""
             try:
-                self.select_item(item)
+                # Verificar se o item já está selecionado usando ID consistente
+                current_item_id = item.get("ID")
+                if self.selected_item_id == current_item_id:
+                    # Se já está selecionado, desselecionar
+                    self.deselect_item()
+                else:
+                    # Se não está selecionado, selecionar
+                    self.select_item(item)
             except Exception as ex:
-                print(f"Erro ao selecionar item: {ex}")
+                print(f"Erro ao selecionar/desselecionar item: {ex}")
         
         card_container = ft.Container(
             content=content,
@@ -3156,7 +3265,7 @@ class VPCRApp:
                     # Verificar se este card deveria estar selecionado
                     colors = self.theme_manager.get_theme_colors()
                     is_selected = self.selected_item_id == item_id
-                    new_card_bg = colors["selected_card"] if is_selected else colors["card_bg"]
+                    new_card_bg = colors["selected_card"] if is_selected else colors["field_bg"]
                     
                     # Atualizar a cor do card
                     if hasattr(card_control, 'color'):
@@ -3653,9 +3762,9 @@ class VPCRApp:
                 ("ID", item.get("ID", "")),
                 ("Status", item.get("Status", "")),
                 ("Category", item.get("Category", "")),
-                ("Initiated Date", item.get("Initiated Date", "")),
-                ("Last Update", item.get("Last Update", "")),
-                ("Closed Date", item.get("Closed Date", "")),
+                ("Initiated Date", self.format_date_display(item.get("Initiated Date", ""))),
+                ("Last Update", self.format_date_display(item.get("Last Update", ""))),
+                ("Closed Date", self.format_date_display(item.get("Closed Date", ""))),
                 ("Supplier", item.get("Supplier", "")),
                 ("Part Numbers", item.get("PNs", "")),
                 ("Plants Affected", item.get("Plants Affected", "")),
@@ -4380,8 +4489,8 @@ class VPCRApp:
             self.selected_item = item
             self.selected_item_id = item.get("ID")
             
-            # Obter ID do item de forma consistente
-            item_id = item.get("vpcr", item.get("ID", ""))
+            # Usar ID consistente
+            item_id = item.get("ID")
             
             # Inicializar estruturas necessárias se não existirem
             if not hasattr(self, 'recently_updated_items'):
@@ -4409,8 +4518,8 @@ class VPCRApp:
                 "Closed Date": item.get("Closed Date", ""),
                 "Category": item.get("Category", "N/A"),
                 "Supplier": item.get("Supplier", ""),
-                "PNs": item.get("PNs", "N/A"),
-                "Plants Affected": item.get("Plants Affected", "N/A"),
+                "PNs": self._format_semicolon_separated_field(item.get("PNs", "N/A")),
+                "Plants Affected": self._format_semicolon_separated_field(item.get("Plants Affected", "N/A")),
                 # Request & Responsibility  
                 "Requestor": item.get("Requestor", ""),
                 "Sourcing": item.get("Sourcing Manager", ""),
@@ -4439,6 +4548,12 @@ class VPCRApp:
             # Atualizar a UI dos containers direitos se eles existirem
             self.update_detail_containers()
             
+            # Carregar logs do VPCR selecionado
+            try:
+                self.load_vpcr_logs(item_id)
+            except Exception as e:
+                print(f"Erro ao carregar logs do VPCR {item_id}: {e}")
+            
             # Atualizar a aparência do card selecionado
             try:
                 self.update_card_selection_only()
@@ -4463,6 +4578,94 @@ class VPCRApp:
                     self.right_panel.update()
         except Exception:
             pass
+
+    def deselect_item(self):
+        """Deseleciona o item atual e mostra o placeholder"""
+        try:
+            # Limpar seleção atual
+            self.selected_item = None
+            self.selected_item_id = None
+            
+            # Limpar campos de detalhes
+            if hasattr(self, 'detail_fields'):
+                self.detail_fields.clear()
+            
+            # Limpar valores dos TextFields se existirem
+            self._clear_all_text_fields()
+            
+            # Mostrar placeholder no painel direito
+            if hasattr(self, 'right_panel') and hasattr(self, 'no_selection_placeholder'):
+                self.right_panel.content = self.no_selection_placeholder
+                self.right_panel.update()
+            
+            # Limpar container de logs (apenas limpar, sem atualizar)
+            if hasattr(self, 'log_content'):
+                try:
+                    self.log_content.controls.clear()
+                except Exception as e:
+                    print(f"Erro ao limpar log_content: {e}")
+            
+            # Atualizar linha de status para mostrar estado vazio
+            if hasattr(self, 'update_status_line'):
+                self.update_status_line()
+            
+            # Atualizar a aparência dos cards (remover destaque de seleção)
+            self.update_card_selection_only()
+            
+            print("Item desselecionado com sucesso")
+            
+        except Exception as e:
+            print(f"Erro ao desselecionar item: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _clear_all_text_fields(self):
+        """Limpa todos os TextFields dos containers de detalhes"""
+        try:
+            # Limpar o título VPCR primeiro
+            if hasattr(self, 'vpcr_title_text') and self.vpcr_title_text:
+                self.vpcr_title_text.value = "N/A"
+                if hasattr(self, 'page') and self.page:
+                    try:
+                        self.vpcr_title_text.update()
+                    except Exception:
+                        pass
+            
+            # Lista de todos os TextFields que precisam ser limpos
+            text_fields = [
+                # Overview fields
+                'tf_title', 'tf_initiated', 'tf_last_update', 'tf_closed_date', 
+                'tf_category', 'tf_supplier', 'tf_pns', 'tf_plants', 'tf_link', 'tf_comments',
+                # Request fields
+                'tf_requestor', 'tf_sourcing', 'tf_sqie', 'tf_continuity'
+            ]
+            
+            for field_name in text_fields:
+                if hasattr(self, field_name):
+                    field = getattr(self, field_name)
+                    if hasattr(field, 'value'):
+                        field.value = ""
+                        # Só atualizar se estiver anexado à página
+                        if hasattr(self, 'page') and self.page:
+                            try:
+                                field.update()
+                            except Exception:
+                                pass
+            
+            # Limpar campos de documentação se existirem
+            if hasattr(self, 'tf_doc'):
+                for field_name, field in self.tf_doc.items():
+                    if hasattr(field, 'value'):
+                        field.value = ""
+                        # Só atualizar se estiver anexado à página
+                        if hasattr(self, 'page') and self.page:
+                            try:
+                                field.update()
+                            except Exception:
+                                pass
+                        
+        except Exception as e:
+            print(f"Erro ao limpar TextFields: {e}")
 
     def update_detail_containers(self):
         """Atualiza os containers de detalhes após seleção de item"""
@@ -4511,13 +4714,20 @@ class VPCRApp:
         colors = self.theme_manager.get_theme_colors()
         # Atualizar valores dos TextFields persistentes (criados no create_vpcr_tab)
         try:
+            # Atualizar o título VPCR com o número do VPCR selecionado
+            if hasattr(self, 'vpcr_title_text') and self.vpcr_title_text:
+                vpcr_number = self.selected_item.get("vpcr", "N/A") if hasattr(self, 'selected_item') and self.selected_item else "N/A"
+                self.vpcr_title_text.value = vpcr_number
+                self.vpcr_title_text.update()
+            
             self.tf_title.value = self.detail_fields.get("Title", "")
             self.tf_title.update()
-            self.tf_initiated.value = self.detail_fields.get("Initiated Date", "")
+            # Campos de data: formatar apenas para exibição, manter valor original internamente
+            self.tf_initiated.value = self.format_date_display(self.detail_fields.get("Initiated Date", ""))
             self.tf_initiated.update()
-            self.tf_last_update.value = self.detail_fields.get("Last Update", "")
+            self.tf_last_update.value = self.format_date_display(self.detail_fields.get("Last Update", ""))
             self.tf_last_update.update()
-            self.tf_closed_date.value = self.detail_fields.get("Closed Date", "")
+            self.tf_closed_date.value = self.format_date_display(self.detail_fields.get("Closed Date", ""))
             self.tf_closed_date.update()
             self.tf_category.value = self.detail_fields.get("Category", "")
             self.tf_category.update()
@@ -4612,26 +4822,241 @@ class VPCRApp:
     def _update_detail_field(self, field_name: str, value: str):
         """Atualiza o dicionário detail_fields quando um campo editável muda."""
         self.detail_fields[field_name] = value
-        # Marcar item atual como "sujo" e atualizar botão salvar correspondente
+        
+        # Para auto-save, apenas marcar como sujo sem salvar imediatamente
+        # O salvamento acontecerá no on_blur (quando terminar a edição)
         if hasattr(self, 'selected_item') and self.selected_item:
             item_id = self.selected_item.get("ID")
             if item_id is not None:
                 if not hasattr(self, 'dirty_items'):
                     self.dirty_items = set()
                 self.dirty_items.add(item_id)
-                # Atualizar cor do botão de salvar se existir
-                if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
-                    btn = self.card_save_buttons[item_id]
-                    try:
-                        btn.icon_color = ft.Colors.ORANGE_400 if hasattr(ft.Colors, 'ORANGE_400') else ft.Colors.ORANGE
-                        btn.tooltip = "Alterações não salvas"
-                        btn.update()
-                    except Exception:
-                        pass
+                
+                # Atualizar cor do botão de salvar apenas se auto-save estiver desabilitado
+                if not self.theme_manager.auto_save_enabled:
+                    if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
+                        btn = self.card_save_buttons[item_id]
+                        try:
+                            btn.icon_color = ft.Colors.ORANGE_400 if hasattr(ft.Colors, 'ORANGE_400') else ft.Colors.ORANGE
+                            btn.tooltip = "Alterações não salvas"
+                            btn.update()
+                        except Exception:
+                            pass
 
-    def save_card_changes(self, item):
+    def _auto_save_on_blur(self, field_name: str, value: str):
+        """Chamada quando um campo perde o foco - executa auto-save se habilitado."""
+        # Atualizar o valor primeiro
+        self.detail_fields[field_name] = value
+        
+        # Auto-save: salvar quando terminar a edição (perder foco)
+        if self.theme_manager.auto_save_enabled:
+            if hasattr(self, 'selected_item') and self.selected_item:
+                try:
+                    self.save_card_changes(self.selected_item, show_notification=False)
+                except Exception as e:
+                    print(f"Erro no auto-save: {e}")
+
+    def format_date_display(self, date_str):
+        """Converte data para dd/mm/aaaa apenas para exibição"""
+        if not date_str or date_str in ['N/A', '', None]:
+            return date_str
+        
+        date_str = str(date_str).strip()
+        
+        # Se está em formato ISO (2025-01-01)
+        if '-' in date_str and len(date_str) == 10:
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(date_str, '%Y-%m-%d')
+                return dt.strftime('%d/%m/%Y')
+            except:
+                pass
+        
+        # Se está em formato americano (1/15/2024 ou 12/25/2023)
+        if '/' in date_str:
+            parts = date_str.split('/')
+            if len(parts) == 3:
+                try:
+                    month, day, year = parts
+                    if len(year) == 4 and int(month) <= 12:
+                        return f"{day.zfill(2)}/{month.zfill(2)}/{year}"
+                except:
+                    pass
+        
+        return date_str
+    
+    def _format_semicolon_separated_field(self, field_value):
+        """Formata campos que contenham valores separados por ';' para quebrar em linhas"""
+        if not field_value or field_value in ['N/A', '', None]:
+            return field_value
+        
+        field_str = str(field_value).strip()
+        
+        # Se contém ponto e vírgula, quebrar em linhas
+        if ';' in field_str:
+            # Dividir por ';', remover espaços em branco de cada item e filtrar itens vazios
+            items = [item.strip() for item in field_str.split(';') if item.strip()]
+            if items:
+                return '\n'.join(items)
+        
+        return field_str
+
+    def load_vpcr_logs(self, item_id):
+        """Carrega os logs de um VPCR específico e atualiza o container de logs"""
+        if not item_id:
+            return
+            
+        try:
+            # Buscar logs do VPCR
+            logs = self.db_manager.get_change_log(item_id, limit=50)
+            
+            # Limpar container de logs
+            self.log_content.controls.clear()
+            
+            if not logs:
+                # Nenhum log encontrado
+                no_logs_card = ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=self.theme_manager.get_theme_colors()["text_container_secondary"]),
+                        ft.Text("Nenhum log encontrado para este VPCR", 
+                               size=12, 
+                               color=self.theme_manager.get_theme_colors()["text_container_secondary"])
+                    ], spacing=8),
+                    bgcolor=self.theme_manager.get_theme_colors()["field_bg"],
+                    padding=8,
+                    border_radius=6,
+                    border=ft.border.all(1, self.theme_manager.get_theme_colors()["field_bg"])
+                )
+                self.log_content.controls.append(no_logs_card)
+            else:
+                # Criar cards para cada log
+                colors = self.theme_manager.get_theme_colors()
+                
+                for log in logs:
+                    # Formatar data
+                    log_date = log.get('change_date', 'Data não disponível')
+                    if log_date and log_date != 'Data não disponível':
+                        try:
+                            # Se está no formato do banco: YYYY-MM-DD HH:MM:SS
+                            if isinstance(log_date, str) and len(log_date) >= 19:
+                                dt = datetime.strptime(log_date[:19], '%Y-%m-%d %H:%M:%S')
+                                log_date = dt.strftime('%d/%m/%Y %H:%M')
+                            # Se está no formato ISO com T
+                            elif isinstance(log_date, str) and 'T' in log_date:
+                                dt = datetime.fromisoformat(log_date.replace('Z', '+00:00'))
+                                log_date = dt.strftime('%d/%m/%Y %H:%M')
+                            else:
+                                log_date = str(log_date)
+                        except Exception as e:
+                            print(f"DEBUG: Erro ao formatar data do log: {e}")
+                            log_date = str(log_date)
+                    
+                    # Determinar ícone e nome da ação baseado no tipo de mudança
+                    change_type = log.get('change_type', 'update')
+                    if change_type == 'import_create':
+                        icon = ft.Icons.ADD_CIRCLE_OUTLINE
+                        icon_color = ft.Colors.GREEN
+                        action_name = "CREATE"
+                    elif change_type == 'manual_create':
+                        icon = ft.Icons.ADD
+                        icon_color = ft.Colors.GREEN
+                        action_name = "CREATE"
+                    elif change_type == 'manual_update':
+                        icon = ft.Icons.EDIT_OUTLINED
+                        icon_color = ft.Colors.BLUE
+                        action_name = "UPDATE"
+                    elif change_type == 'manual_delete':
+                        icon = ft.Icons.DELETE_OUTLINE
+                        icon_color = ft.Colors.RED
+                        action_name = "DELETE"
+                    elif change_type == 'import_update':
+                        icon = ft.Icons.SYNC
+                        icon_color = ft.Colors.ORANGE
+                        action_name = "IMPORT"
+                    else:
+                        icon = ft.Icons.CHANGE_HISTORY
+                        icon_color = colors["accent"]
+                        action_name = "CHANGE"
+                    
+                    # Criar card do log
+                    log_card = ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(icon, size=16, color=icon_color),
+                                ft.Text(action_name, 
+                                        size=self.theme_manager.font_size, 
+                                        weight=ft.FontWeight.BOLD,
+                                        color=icon_color),
+                                ft.Text(f"Campo: {log.get('field_name', 'N/A')}", 
+                                        size=self.theme_manager.font_size, 
+                                        color=colors["text_container_primary"],
+                                        expand=True)
+                            ], spacing=8),
+                            ft.Column([
+                                ft.Text("Old Value:", size=self.theme_manager.font_size, color=colors["text_container_secondary"]),
+                                ft.Text(str(log.get('old_value', 'N/A')), 
+                                       size=self.theme_manager.font_size, 
+                                       color=colors["text_container_primary"],
+                                       expand=True)
+                            ], spacing=2),
+                            ft.Column([
+                                ft.Text("New Value:", size=self.theme_manager.font_size, color=colors["text_container_secondary"]),
+                                ft.Text(str(log.get('new_value', 'N/A')), 
+                                       size=self.theme_manager.font_size, 
+                                       color=colors["text_container_primary"],
+                                       expand=True)
+                            ], spacing=2),
+                            ft.Row([
+                                ft.Text("Date:", size=self.theme_manager.font_size, color=colors["text_container_secondary"]),
+                                ft.Text(str(log_date), size=self.theme_manager.font_size, color=colors["text_container_primary"])
+                            ], spacing=8)
+                        ], spacing=4),
+                        bgcolor=colors["field_bg"],
+                        padding=8,
+                        border_radius=6,
+                        border=ft.border.all(1, colors["field_bg"]),
+                        margin=ft.margin.only(bottom=4)
+                    )
+                    
+                    self.log_content.controls.append(log_card)
+            
+            # Atualizar display
+            try:
+                if hasattr(self.log_content, 'page') and self.log_content.page:
+                    self.log_content.update()
+            except Exception as e:
+                print(f"DEBUG: Erro ao atualizar container de logs: {e}")
+                
+        except Exception as e:
+            print(f"DEBUG: Erro ao carregar logs: {e}")
+            # Mostrar erro no container
+            error_card = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.ERROR_OUTLINE, size=16, color=ft.Colors.RED),
+                    ft.Text(f"Erro ao carregar logs: {e}", 
+                           size=12, 
+                           color=ft.Colors.RED)
+                ], spacing=8),
+                bgcolor=self.theme_manager.get_theme_colors()["field_bg"],
+                padding=8,
+                border_radius=6,
+                border=ft.border.all(1, self.theme_manager.get_theme_colors()["field_bg"])
+            )
+            self.log_content.controls.clear()
+            self.log_content.controls.append(error_card)
+            try:
+                if hasattr(self.log_content, 'page') and self.log_content.page:
+                    self.log_content.update()
+            except:
+                pass
+
+    def save_card_changes(self, item, show_notification=True):
         """Persiste alterações editáveis do card selecionado e reseta estado sujo.
         Agora salva no banco de dados e registra mudanças no log.
+        
+        Args:
+            item: O item a ser salvo
+            show_notification: Se deve mostrar notificação de sucesso (padrão: True)
         """
         try:
             if not item:
@@ -4700,12 +5125,23 @@ class VPCRApp:
                                 
                                 # Registrar mudança no log APENAS se houve alteração real
                                 if old_value_clean != new_value_clean:
+                                    # Determinar tipo de mudança
+                                    if old_value_clean and not new_value_clean:
+                                        # Valor removido (algo -> vazio)
+                                        change_type = 'manual_delete'
+                                    elif not old_value_clean and new_value_clean:
+                                        # Valor adicionado (vazio -> algo)
+                                        change_type = 'manual_create'
+                                    else:
+                                        # Valor alterado (algo -> outra coisa)
+                                        change_type = 'manual_update'
+                                    
                                     self.db_manager.log_change(
                                         item_id=str(item_id), 
                                         field_name=db_field, 
                                         old_value=old_value_clean, 
                                         new_value=new_value_clean, 
-                                        change_type='manual_update',
+                                        change_type=change_type,
                                         conn=conn  # Usar mesma conexão para evitar duplicação
                                     )
                                     changes_made = True
@@ -4777,16 +5213,29 @@ class VPCRApp:
             except Exception as e:
                 print(f"DEBUG: Erro ao recarregar item {item_id}: {e}")
                     
-            # Feedback visual usando a notificação personalizada
-            self.show_custom_notification(
-                f"✅ Card {item_id} salvo com sucesso!",
-                color=ft.Colors.GREEN_400,
-                duration=2000
-            )
+            # Feedback visual usando a notificação personalizada (apenas se solicitado)
+            if show_notification:
+                if changes_made:
+                    self.notify(
+                        f"✅ Card {item_id} salvo com sucesso!",
+                        kind="success",
+                        auto_hide=2000
+                    )
+                else:
+                    self.notify(
+                        f"ℹ️ Card {item_id}: Nenhuma alteração detectada",
+                        kind="info",
+                        auto_hide=2000
+                    )
             
             # Debug: mostrar se houve mudanças detectadas
             if changes_made:
                 print(f"DEBUG: Mudanças detectadas e logs criados para {item_id}")
+                # Recarregar logs no container se houve mudanças
+                try:
+                    self.load_vpcr_logs(item_id)
+                except Exception as log_error:
+                    print(f"DEBUG: Erro ao recarregar logs após salvar: {log_error}")
             else:
                 print(f"DEBUG: Nenhuma mudança detectada para {item_id}, mas dados foram atualizados")
             
@@ -4938,7 +5387,7 @@ class VPCRApp:
         )
         
         self.tf_initiated = ft.TextField(
-            value=self.detail_fields.get("Initiated Date", ""), 
+            value=self.format_date_display(self.detail_fields.get("Initiated Date", "")), 
             label="Initiated Date", 
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
@@ -4949,7 +5398,7 @@ class VPCRApp:
         )
         
         self.tf_last_update = ft.TextField(
-            value=self.detail_fields.get("Last Update", ""), 
+            value=self.format_date_display(self.detail_fields.get("Last Update", "")), 
             label="Last Update", 
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
@@ -4960,7 +5409,7 @@ class VPCRApp:
         )
         
         self.tf_closed_date = ft.TextField(
-            value=self.detail_fields.get("Closed Date", ""), 
+            value=self.format_date_display(self.detail_fields.get("Closed Date", "")), 
             label="Closed Date", 
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
@@ -5031,7 +5480,8 @@ class VPCRApp:
                 tooltip="Abrir link",
                 on_click=lambda e: self._open_link()
             ),
-            on_change=lambda e: self._update_detail_field("Link", e.control.value)
+            on_change=lambda e: self._update_detail_field("Link", e.control.value),
+            on_blur=lambda e: self._auto_save_on_blur("Link", e.control.value)
         )
         
         # Campo de Comentários multilinha
@@ -5044,7 +5494,8 @@ class VPCRApp:
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
-            on_change=lambda e: self._update_detail_field("Comments", e.control.value)
+            on_change=lambda e: self._update_detail_field("Comments", e.control.value),
+            on_blur=lambda e: self._auto_save_on_blur("Comments", e.control.value)
         )
 
         # Mais espaçamento entre campos (spacing aumentado)
@@ -5126,7 +5577,8 @@ class VPCRApp:
             border_color=colors["field_border"], 
             expand=True, 
             height=40, 
-            on_change=lambda e: self._update_detail_field("Continuity", e.control.value)
+            on_change=lambda e: self._update_detail_field("Continuity", e.control.value),
+            on_blur=lambda e: self._auto_save_on_blur("Continuity", e.control.value)
         )
 
         # Organizar Responsibles em duas colunas
@@ -5169,7 +5621,8 @@ class VPCRApp:
                     border_color=colors["field_border"], 
                     expand=True, 
                     height=40, 
-                    on_change=lambda e, n=name: self._update_detail_field(n, e.control.value)
+                    on_change=lambda e, n=name: self._update_detail_field(n, e.control.value),
+                    on_blur=lambda e, n=name: self._auto_save_on_blur(n, e.control.value)
                 )
                 self.tf_doc[name] = tf
 
@@ -5218,28 +5671,48 @@ class VPCRApp:
 
         # L2: Log com largura dos containers Request e Documentation e metade da altura
         
+        # Criar texto do título VPCR como atributo da classe para poder atualizá-lo
+        self.vpcr_title_text = ft.Text(
+            self.selected_item.get("vpcr", "N/A") if hasattr(self, 'selected_item') and self.selected_item else "N/A", 
+            size=18, 
+            weight=ft.FontWeight.BOLD, 
+            color=colors["text_container_primary"]
+        )
+
         # Container do Overview
         left_top = ft.Container(
             content=ft.Column([
-                ft.Text("VPCR Overview", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                self.vpcr_title_text,
                 self.detail_overview
             ], spacing=6, expand=True),
             expand=True,
             padding=ft.padding.all(10)
         )
+            # Container de logs com scroll
+        self.log_content = ft.Column([], spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+        
+        # Inicializar com mensagem padrão
+        default_log_msg = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.HISTORY, size=16, color=colors["text_container_secondary"]),
+                ft.Text("Selecione um card para ver o histórico de alterações", 
+                       size=12, 
+                       color=colors["text_container_secondary"])
+            ], spacing=8),
+            bgcolor=colors["field_bg"],
+            padding=8,
+            border_radius=6,
+            border=ft.border.all(1, colors["field_bg"])
+        )
+        self.log_content.controls.append(default_log_msg)
+        
         self.detail_log = ft.Container(
-            content=ft.Container(
-                content=ft.Text(self.detail_fields.get("Log", ""), size=12, color=colors["text_container_secondary"]), 
-                expand=True, 
-                alignment=ft.alignment.top_left
-            ), 
+            content=self.log_content,
             bgcolor=colors["secondary"], 
             padding=12, 
             border_radius=8, 
-            expand=True  # Log expandirá para ocupar a largura disponível
-        )
-
-        # Linha de Status com ícones dinâmicos baseados no status atual
+            expand=True
+        )        # Linha de Status com ícones dinâmicos baseados no status atual
         self.status_line = self.build_status_line()
 
         # Layout final: Status line acima, depois Overview à esquerda e coluna direita com Request/Documentation/Log
@@ -5307,8 +5780,9 @@ class VPCRApp:
         )
 
         # Contêiner do painel direito que será trocado entre placeholder e detalhes
+        # Inicializar com placeholder já que não há item selecionado
         self.right_panel = ft.Container(
-            content=self.detail_main_content if getattr(self, 'selected_item', None) else self.no_selection_placeholder,
+            content=self.no_selection_placeholder,
             expand=True
         )
 
@@ -5412,6 +5886,37 @@ class VPCRApp:
                    color=colors["text_secondary"])
         ], spacing=8)
 
+        # Auto-save switch
+        def toggle_auto_save(e):
+            enabled = e.control.value
+            self.theme_manager.set_auto_save(enabled)
+            
+            # Mostrar notificação
+            status_text = "habilitado" if enabled else "desabilitado"
+            snack_bar = ft.SnackBar(
+                content=ft.Text(f"💾 Auto-save {status_text}"),
+                action="OK",
+                action_color=self.theme_manager.get_theme_colors()["accent"]
+            )
+            self.page.snack_bar = snack_bar
+            snack_bar.open = True
+            self.page.update()
+
+        auto_save_switch = ft.Column([
+            ft.Text("Auto-Save", size=16, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+            ft.Switch(
+                label="Salvar alterações automaticamente",
+                value=self.theme_manager.auto_save_enabled,
+                on_change=toggle_auto_save,
+                active_color=colors["accent"],
+                label_style=ft.TextStyle(color=colors["cor_font_settings"])
+            ),
+            ft.Text("Quando ativado, todas as alterações nos campos são salvas automaticamente", 
+                   size=11, 
+                   color=colors["text_secondary"],
+                   italic=True)
+        ], spacing=8)
+
         # Campos configuráveis visíveis nos cards
         fields_checkboxes = []
         for field in self.db_headers:
@@ -5440,17 +5945,19 @@ class VPCRApp:
         # Containers separados com scroll: tema | campos
         theme_container = ft.Container(
             content=ft.Column([
-                ft.Text("Tema da Aplicação", size=18, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+                ft.Text("Configurações Gerais", size=18, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
                 ft.Divider(),
                 ft.Container(content=ft.Column([theme_selector], scroll=ft.ScrollMode.AUTO), expand=False),
                 ft.Divider(),
-                font_size_slider
+                font_size_slider,
+                ft.Divider(),
+                auto_save_switch
             ], spacing=10),
             bgcolor=colors["secondary"],
             padding=12,
             border_radius=8,
             width=360,
-            height=400  # Aumentado para acomodar o controle de fonte
+            height=500  # Aumentado para acomodar o auto-save
         )
 
         fields_container = ft.Container(
@@ -5464,7 +5971,7 @@ class VPCRApp:
             padding=12,
             border_radius=8,
             width=360,
-            height=400  # Igualado com o tema_container para manter consistência visual
+            height=500  # Igualado com o tema_container para manter consistência visual
         )
 
         # Layout responsivo: duas colunas quando couber, coluna única se pequeno
