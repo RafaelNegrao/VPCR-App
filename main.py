@@ -2858,6 +2858,7 @@ class VPCRApp:
             try:
                 # Verificar se o item já está selecionado usando ID consistente
                 current_item_id = item.get("ID")
+                
                 if self.selected_item_id == current_item_id:
                     # Se já está selecionado, desselecionar
                     self.deselect_item()
@@ -2866,6 +2867,8 @@ class VPCRApp:
                     self.select_item(item)
             except Exception as ex:
                 print(f"Erro ao selecionar/desselecionar item: {ex}")
+                import traceback
+                traceback.print_exc()
         
         card_container = ft.Container(
             content=content,
@@ -3260,7 +3263,7 @@ class VPCRApp:
             for i, card_control in enumerate(self.card_list.controls):
                 if i < len(self.filtered_data):
                     item = self.filtered_data[i]
-                    item_id = item.get("vpcr", item.get("ID", ""))
+                    item_id = item.get("ID")  # Usar ID consistente
                     
                     # Verificar se este card deveria estar selecionado
                     colors = self.theme_manager.get_theme_colors()
@@ -3714,47 +3717,98 @@ class VPCRApp:
             ]
             
             # Criar status visual como uma linha mesclada (estilo Excel)
-            status_cells = []
-            for i, step in enumerate(workflow_steps):
-                is_completed = i <= 2  # Primeiros 3 completos
-                
-                if is_completed:
-                    # Ícone + texto em uma célula
-                    status_content = f"✓\n{step}"
-                    color = colors.Color(0, 0.6, 0)  # Verde
-                else:
-                    # Ícone + texto em uma célula  
-                    status_content = f"○\n{step}"
-                    color = colors.Color(0.5, 0.5, 0.5)  # Cinza
-                
-                status_cells.append(Paragraph(status_content, ParagraphStyle(
-                    'StatusCell',
-                    fontSize=7,
-                    alignment=1,  # Centro
-                    textColor=color,
-                    leading=8
-                )))
+            # Obter status atual do item para calcular progresso dinamicamente
+            current_status = item.get("Status", "Draft")
             
-            # Criar tabela com uma única linha (como linha mesclada do Excel)
-            # Largura total igual à tabela principal: 260mm dividido em 11 colunas
-            workflow_visual_table = Table([status_cells], 
-                                        colWidths=[260*mm / 11] * 11,
-                                        rowHeights=[15*mm])
-            safe_apply_style(workflow_visual_table, [
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                ('TOPPADDING', (0, 0), (-1, -1), 0),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-                ('LEFTPADDING', (0, 0), (-1, -1), 1),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-                ('BACKGROUND', (0, 0), (-1, -1), colors.white),
-                ('LINEABOVE', (0, 0), (-1, 0), 1, medium_gray),
-                ('LINEBEFORE', (0, 0), (0, -1), 1, medium_gray),
-                ('LINEAFTER', (-1, 0), (-1, -1), 1, medium_gray),
-            ], context_desc="workflow_visual_table")
+            # Verificar se é um status de rejeição
+            is_rejected_status = "reject" in current_status.lower()
             
-            # Adicionar a linha de status visual ao card
-            card_elements.append(workflow_visual_table)
+            if is_rejected_status:
+                # Para status de rejeição, mostrar todos como não completos e adicionar status vermelho
+                current_index = -1  # Nenhum status como completo
+                
+                # Adicionar linha de status rejeitado em vermelho
+                rejected_text = current_status.replace("Reject", "Rejected")
+                
+                reject_table = Table([[rejected_text]], colWidths=[260*mm])
+                safe_apply_style(reject_table, [
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.red),
+                    ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 12),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 15),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 15),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ], context_desc="reject_table")
+                card_elements.append(reject_table)
+            else:
+                # Lógica normal para status não rejeitados
+                # Encontrar o índice do status atual
+                current_index = -1
+                for idx, status in enumerate(workflow_steps):
+                    if current_status.lower() in status.lower() or status.lower() in current_status.lower():
+                        current_index = idx
+                        break
+                
+                # Se não encontrou correspondência exata, tentar correspondências parciais
+                if current_index == -1:
+                    normalized_current = current_status.replace("\n", " ").strip().lower()
+                    for idx, status in enumerate(workflow_steps):
+                        if normalized_current in status.lower() or status.lower() in normalized_current:
+                            current_index = idx
+                            break
+                
+                # Se ainda não encontrou, usar Draft como default
+                if current_index == -1:
+                    current_index = 0
+            
+            # Só mostrar workflow se não for rejeitado
+            if not is_rejected_status:
+                status_cells = []
+                for i, step in enumerate(workflow_steps):
+                    # Status está completo se seu índice for menor ou igual ao atual
+                    is_completed = i <= current_index
+                    
+                    if is_completed:
+                        # Ícone + texto em uma célula
+                        status_content = f"✓\n{step}"
+                        color = colors.Color(0, 0.6, 0)  # Verde
+                    else:
+                        # Ícone + texto em uma célula  
+                        status_content = f"○\n{step}"
+                        color = colors.Color(0.5, 0.5, 0.5)  # Cinza
+                    
+                    status_cells.append(Paragraph(status_content, ParagraphStyle(
+                        'StatusCell',
+                        fontSize=7,
+                        alignment=1,  # Centro
+                        textColor=color,
+                        leading=8
+                    )))
+                
+                # Criar tabela com uma única linha (como linha mesclada do Excel)
+                # Largura total igual à tabela principal: 260mm dividido em 11 colunas
+                workflow_visual_table = Table([status_cells], 
+                                            colWidths=[260*mm / 11] * 11,
+                                            rowHeights=[15*mm])
+                safe_apply_style(workflow_visual_table, [
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 0),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 1),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+                    ('LINEABOVE', (0, 0), (-1, 0), 1, medium_gray),
+                    ('LINEBEFORE', (0, 0), (0, -1), 1, medium_gray),
+                    ('LINEAFTER', (-1, 0), (-1, -1), 1, medium_gray),
+                ], context_desc="workflow_visual_table")
+                
+                # Adicionar a linha de status visual ao card
+                card_elements.append(workflow_visual_table)
             
             # Lista completa de todos os campos incluindo novos
             all_fields = [
