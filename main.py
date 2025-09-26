@@ -852,6 +852,8 @@ class DatabaseManager:
         self.db_path = db_path
         self.create_todos_table()
         self.create_log_table()
+        # Garantir que a coluna new_data existe na tabela vpcr
+        self.ensure_column_exists('vpcr', 'new_data', 'BOOLEAN DEFAULT 0')
     
     def get_connection(self):
         """Cria uma nova conexão com o banco de dados com timeout"""
@@ -892,6 +894,24 @@ class DatabaseManager:
             ''')
             conn.commit()
     
+    def ensure_column_exists(self, table_name, column_name, column_type='TEXT'):
+        """Garante que uma coluna existe na tabela especificada"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Verificar se a coluna já existe
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = cursor.fetchall()
+            existing_columns = [column[1] for column in columns]
+            
+            if column_name not in existing_columns:
+                try:
+                    # Adicionar a coluna se não existir
+                    cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}')
+                    conn.commit()
+                    print(f"Coluna '{column_name}' adicionada à tabela '{table_name}'")
+                except sqlite3.Error as e:
+                    print(f"Erro ao adicionar coluna '{column_name}' à tabela '{table_name}': {e}")
 
     
     def get_todos_for_item(self, item_id):
@@ -1157,6 +1177,10 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
+            # Garantir que todas as colunas necessárias existam na tabela vpcr
+            for app_field, db_field in db_field_mapping.items():
+                self.ensure_column_exists('vpcr', db_field, 'TEXT')
+            
             # Iniciar transação explícita
             cursor.execute('BEGIN IMMEDIATE')
             
@@ -1359,6 +1383,14 @@ class DatabaseManager:
                 'Desired Production Date at Affected Plant(s)': 'desired_production_date',
                 'SCR Item ID': 'scr_item_id'
             }
+            
+            # Garantir que todas as colunas necessárias existam na tabela vpcr
+            for excel_col, db_field in column_mapping.items():
+                self.ensure_column_exists('vpcr', db_field, 'TEXT')
+            
+            # Garantir que colunas adicionais também existam
+            self.ensure_column_exists('vpcr', 'new_data', 'BOOLEAN DEFAULT 0')
+            self.ensure_column_exists('vpcr', 'link_vpcr', 'TEXT')
             
             imported_count = 0
             updated_count = 0
@@ -1980,6 +2012,9 @@ class DetailLayoutManager:
             # print("DEBUG: Layout desktop aplicado - painel direito restaurado ao layout original")
 
 class VPCRApp:
+    # Versão do aplicativo
+    VERSION = "2.1.0"
+    
     EDITABLE_FIELDS = [
         "Comments",
         "Continuity",
@@ -2405,7 +2440,7 @@ class VPCRApp:
         """Atualiza as animações dos ícones após mudanças nos TODOs"""
         try:
             # Atualizar apenas os itens que não devem mais ser animados
-            active_ids = {item.get("ID") for item in self.sample_data if self.db_manager.has_incomplete_todos(item.get("ID"))}
+            active_ids = {item.get("ID") for item in self.sample_data if item and self.db_manager.has_incomplete_todos(item.get("ID"))}
             for item_id in list(self.animated_icons.keys()):
                 if item_id not in active_ids:
                     try:
@@ -3807,7 +3842,7 @@ class VPCRApp:
                     selected_items = [item for item in self.filtered_data if item.get('ID') in self.card_selection]
                     if not selected_items:
                         # fallback: procurar em todos os dados
-                        selected_items = [item for item in self.sample_data if item.get('ID') in self.card_selection]
+                        selected_items = [item for item in self.sample_data if item and item.get('ID') in self.card_selection]
                     
                     self._generate_pdf_report(selected_items, e.path)
                     # Notificar sucesso
@@ -4696,12 +4731,12 @@ class VPCRApp:
     def populate_filter_options(self):
         """Popula as opções dos filtros com chips de multiseleção"""
         # coletar valores únicos de todos os dados
-        vpcr_vals = sorted({item.get("vpcr", "") for item in self.sample_data if item.get("vpcr", "")})
-        sourcing_vals = sorted({item.get("Sourcing Manager", "") for item in self.sample_data if item.get("Sourcing Manager", "")})
-        status_vals = sorted({item.get("Status", "") for item in self.sample_data if item.get("Status", "")})
-        supplier_vals = sorted({item.get("Supplier", "") for item in self.sample_data if item.get("Supplier", "")})
-        requestor_vals = sorted({item.get("Requestor", "") for item in self.sample_data if item.get("Requestor", "")})
-        continuity_vals = sorted({item.get("Continuity", "") for item in self.sample_data if item.get("Continuity", "")})
+        vpcr_vals = sorted({item.get("vpcr", "") for item in self.sample_data if item and item.get("vpcr", "")})
+        sourcing_vals = sorted({item.get("Sourcing Manager", "") for item in self.sample_data if item and item.get("Sourcing Manager", "")})
+        status_vals = sorted({item.get("Status", "") for item in self.sample_data if item and item.get("Status", "")})
+        supplier_vals = sorted({item.get("Supplier", "") for item in self.sample_data if item and item.get("Supplier", "")})
+        requestor_vals = sorted({item.get("Requestor", "") for item in self.sample_data if item and item.get("Requestor", "")})
+        continuity_vals = sorted({item.get("Continuity", "") for item in self.sample_data if item and item.get("Continuity", "")})
 
         colors = self.theme_manager.get_theme_colors()
 
@@ -4986,6 +5021,57 @@ class VPCRApp:
         dlg.open = False
         self.page.update()
 
+    def remove_new_icon_from_card(self, item_id):
+        """Remove apenas o ícone NEW do card específico sem recarregar a lista completa"""
+        try:
+            # Encontrar o card na lista de cards atual
+            if hasattr(self, 'card_list') and self.card_list and self.card_list.controls:
+                for card_control in self.card_list.controls:
+                    # Verificar se é um card (pode ser ft.Card ou ft.Container)
+                    if hasattr(card_control, 'content'):
+                        # Procurar o item ID nos dados do card
+                        # Cada card tem uma estrutura: Card -> Container -> Column -> Rows
+                        try:
+                            # Navegação através da estrutura do card
+                            container = card_control.content  # Container do card
+                            if hasattr(container, 'content') and hasattr(container.content, 'controls'):
+                                column = container.content  # Column principal
+                                if hasattr(column, 'controls') and len(column.controls) > 0:
+                                    # Primeira row contém o ID e possivelmente o ícone NEW
+                                    first_row = column.controls[0]
+                                    if hasattr(first_row, 'controls'):
+                                        # Verificar se o ID do card corresponde
+                                        card_id = None
+                                        new_icon_container = None
+                                        
+                                        # Procurar o ID e o ícone NEW na primeira row
+                                        for control in first_row.controls:
+                                            # Verificar se é o texto com o ID
+                                            if hasattr(control, 'value') and str(control.value) == str(item_id):
+                                                card_id = control.value
+                                            # Verificar se é o container do ícone NEW
+                                            elif (hasattr(control, 'content') and 
+                                                  hasattr(control.content, 'icon') and 
+                                                  control.content.icon == ft.Icons.FIBER_NEW):
+                                                new_icon_container = control
+                                        
+                                        # Se encontrou o card correto e tem ícone NEW, remover
+                                        if card_id and str(card_id) == str(item_id) and new_icon_container:
+                                            first_row.controls.remove(new_icon_container)
+                                            first_row.update()
+                                            print(f"Ícone NEW removido do card {item_id}")
+                                            return True
+                        except Exception as e:
+                            print(f"Erro ao processar card: {e}")
+                            continue
+            
+            print(f"Ícone NEW não encontrado para o card {item_id}")
+            return False
+            
+        except Exception as e:
+            print(f"Erro ao remover ícone NEW do card {item_id}: {e}")
+            return False
+
     def select_item(self, item):
         """Atualiza os campos detalhados com base no item selecionado"""
         try:
@@ -5003,6 +5089,9 @@ class VPCRApp:
             
             # Sempre definir new_data como 0 ao selecionar o card (independentemente do valor atual)
             try:
+                # Garantir que a coluna new_data existe antes de tentar atualizá-la
+                self.db_manager.ensure_column_exists('vpcr', 'new_data', 'BOOLEAN DEFAULT 0')
+                
                 with self.db_manager.get_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
@@ -5011,7 +5100,17 @@ class VPCRApp:
                     )
                     conn.commit()
                     print(f"Campo new_data definido como 0 no DB para item: {item_id}")
-                    # NÃO atualizar o item local nem recarregar dados - ícone permanece até próximo carregamento
+                    
+                    # Remover apenas o ícone NEW do card específico
+                    self.remove_new_icon_from_card(item_id)
+                    
+                    # Atualizar também o item local para manter consistência
+                    if hasattr(self, 'sample_data') and self.sample_data:
+                        for data_item in self.sample_data:
+                            if data_item and data_item.get("ID") == item_id:
+                                data_item["new_data"] = False
+                                break
+                    
             except Exception as ex:
                 print(f"Erro ao atualizar new_data: {ex}")
             
@@ -5784,6 +5883,10 @@ class VPCRApp:
                     
                     # Usar uma única conexão para todas as operações
                     conn = self.db_manager.get_connection()
+                    
+                    # Garantir que todas as colunas necessárias existam na tabela vpcr
+                    for app_field, db_field in db_field_map.items():
+                        self.db_manager.ensure_column_exists('vpcr', db_field, 'TEXT')
                     
                     try:
                         for f in editable_fields:
@@ -6563,6 +6666,10 @@ class VPCRApp:
         type_set = set()
 
         for item in self.sample_data:
+            # Verificar se o item não é None
+            if item is None:
+                continue
+                
             # Contagem por status
             status = (item.get("Status") or "N/A").strip() or "N/A"
             indicators["status_counts"][status] = indicators["status_counts"].get(status, 0) + 1
@@ -6636,8 +6743,12 @@ class VPCRApp:
         yearly_durations = {}  # Armazenar durações por ano
         
         for item in self.sample_data:
-            initiated_date = item.get("Initiated Date", "").strip()
-            closed_date = item.get("Closed Date", "").strip()
+            # Verificar se o item não é None
+            if item is None:
+                continue
+                
+            initiated_date = (item.get("Initiated Date") or "").strip()
+            closed_date = (item.get("Closed Date") or "").strip()
             
             # Verificar se ambas as datas existem e não estão vazias
             if not initiated_date or not closed_date:
@@ -7201,10 +7312,85 @@ class VPCRApp:
             height=500  # Igualado com o tema_container para manter consistência visual
         )
 
-        # Layout responsivo: duas colunas quando couber, coluna única se pequeno
+        # Container com informações do desenvolvedor
+        developer_info_container = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.Icons.INFO, color=colors["accent"], size=24),
+                    ft.Text("Informações do Aplicativo", size=18, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"])
+                ], spacing=8, alignment=ft.MainAxisAlignment.START),
+                ft.Divider(),
+                
+                # Desenvolvedor
+                ft.Row([
+                    ft.Icon(ft.Icons.PERSON, color=colors["accent"], size=24),
+                    ft.Column([
+                        ft.Text("Developed by:", size=14, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+                        ft.Text("Rafael Negrão de Souza", size=13, color=colors["text_primary"])
+                    ], spacing=2, expand=True)
+                ], spacing=12, alignment=ft.MainAxisAlignment.START),
+                
+                # Departamento
+                ft.Row([
+                    ft.Icon(ft.Icons.BUSINESS, color=colors["accent"], size=24),
+                    ft.Column([
+                        ft.Text("Department:", size=14, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+                        ft.Text("Supply Continuity Inter AN62H", size=13, color=colors["text_primary"])
+                    ], spacing=2, expand=True)
+                ], spacing=12, alignment=ft.MainAxisAlignment.START),
+                
+                # Email
+                ft.Row([
+                    ft.Icon(ft.Icons.EMAIL, color=colors["accent"], size=24),
+                    ft.Column([
+                        ft.Text("E-mail:", size=14, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+                        ft.Text("rafael.negrao.souza@cummins.com", size=12, color=colors["text_primary"])
+                    ], spacing=2, expand=True)
+                ], spacing=12, alignment=ft.MainAxisAlignment.START),
+                
+                # Versão
+                ft.Row([
+                    ft.Icon(ft.Icons.LABEL, color=colors["accent"], size=24),
+                    ft.Column([
+                        ft.Text("Versão:", size=14, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+                        ft.Text(f"v{self.VERSION}", size=13, color=colors["text_primary"])
+                    ], spacing=2, expand=True)
+                ], spacing=12, alignment=ft.MainAxisAlignment.START),
+                
+                # Data de build/atualização
+                ft.Row([
+                    ft.Icon(ft.Icons.UPDATE, color=colors["accent"], size=24),
+                    ft.Column([
+                        ft.Text("Última atualização:", size=14, weight=ft.FontWeight.BOLD, color=colors["cor_font_settings"]),
+                        ft.Text("Setembro 2025", size=13, color=colors["text_primary"])
+                    ], spacing=2, expand=True)
+                ], spacing=12, alignment=ft.MainAxisAlignment.START),
+                
+                # Espaçador flexível
+                ft.Container(expand=True),
+                
+                # Rodapé com logo Cummins ou indicador
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.COPYRIGHT, color=colors["text_secondary"], size=16),
+                        ft.Text("2025 Cummins Inc.", size=11, color=colors["text_secondary"], italic=True)
+                    ], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
+                    padding=ft.padding.only(top=8)
+                )
+                
+            ], spacing=16),
+            bgcolor=colors["secondary"],
+            padding=12,
+            border_radius=8,
+            width=360,
+            height=500  # Mesma altura dos outros containers
+        )
+
+        # Layout responsivo: três colunas quando couber, se adapta conforme necessário
         settings_layout = ft.Row([
             theme_container,
-            fields_container
+            fields_container,
+            developer_info_container
         ], spacing=20, wrap=True)
 
         return ft.Container(
