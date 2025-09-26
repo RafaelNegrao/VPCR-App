@@ -1833,11 +1833,179 @@ class ThemeManager:
         except:
             self.auto_save_enabled = False
 
+class DetailLayoutManager:
+    """Gerencia o layout responsivo dos containers de detalhes."""
+    
+    def __init__(self, app_ref: 'VPCRApp'):
+        self.app = app_ref
+        self.is_mobile_layout = False
+        self.breakpoint_width = 1100
+        
+        # Referências aos containers principais
+        self.status_line = None
+        self.overview_container = None  
+        self.request_container = None
+        self.documentation_container = None
+        self.log_container = None
+        
+        # Layout containers
+        self.desktop_layout = None
+        self.mobile_layout = None
+        self.current_layout_container = None
+        self.main_container = None  # Referência ao container principal da aba VPCR
+        self.left_column = None  # Referência à coluna esquerda
+        
+    def set_sections(self, status_line, overview_container, request_container, doc_container, log_container):
+        """Define as referências dos containers de seções."""
+        self.status_line = status_line
+        self.overview_container = overview_container
+        self.request_container = request_container  
+        self.documentation_container = doc_container
+        self.log_container = log_container
+        
+    def on_resize(self, page_width):
+        """Callback chamado quando a janela é redimensionada."""
+        should_be_mobile = page_width < self.breakpoint_width
+        
+        # Se o estado mudou, reorganizar layout
+        if should_be_mobile != self.is_mobile_layout:
+            self.is_mobile_layout = should_be_mobile
+            self._rebuild_layout()
+            
+    def _rebuild_layout(self):
+        """Reconstrói o layout baseado no estado atual (mobile/desktop)."""
+        # Verificar se o container principal existe
+        if not hasattr(self.app, 'main_vpcr_container') or not self.main_container:
+            print("DEBUG: Layout não reconstruído - container principal não disponível")
+            return
+            
+        # Verificar se todos os containers existem
+        if not all([self.status_line, self.overview_container, self.request_container, 
+                   self.documentation_container, self.log_container]):
+            print("DEBUG: Layout não reconstruído - containers de detalhe não estão disponíveis")
+            return
+            
+        # print(f"DEBUG: Reconstruindo layout - Mobile: {self.is_mobile_layout}")
+        colors = self.app.theme_manager.get_theme_colors()
+        
+        if self.is_mobile_layout:
+            # Layout móvel: manter lista à esquerda, reorganizar APENAS painel direito em coluna
+            # Verificar se há card selecionado
+            if (hasattr(self.app, 'right_panel') and 
+                hasattr(self.app, 'no_selection_placeholder') and
+                self.app.right_panel.content != self.app.no_selection_placeholder):
+                
+                # Card selecionado - reorganizar detalhes em coluna única
+                mobile_details = ft.Column([
+                    # 1. Status line  
+                    self.status_line,
+                    
+                    # 2. Overview
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("VPCR Overview", size=14, weight=ft.FontWeight.BOLD, 
+                                   color=colors["text_container_primary"]),
+                            self.overview_container
+                        ], spacing=6),
+                        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                        bgcolor=colors["secondary"],
+                        border_radius=8,
+                        margin=ft.margin.symmetric(vertical=2)
+                    ),
+                    
+                    # 3. Request & Responsibility
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("Request & Responsibility", size=14, weight=ft.FontWeight.BOLD, 
+                                   color=colors["text_container_primary"]),
+                            self.request_container
+                        ], spacing=6),
+                        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                        bgcolor=colors["secondary"], 
+                        border_radius=8,
+                        margin=ft.margin.symmetric(vertical=2)
+                    ),
+                    
+                    # 4. Documentation
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("Documentation", size=14, weight=ft.FontWeight.BOLD, 
+                                   color=colors["text_container_primary"]),
+                            self.documentation_container
+                        ], spacing=6),
+                        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                        bgcolor=colors["secondary"],
+                        border_radius=8, 
+                        margin=ft.margin.symmetric(vertical=2)
+                    ),
+                    
+                    # 5. Log
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("Log", size=14, weight=ft.FontWeight.BOLD, 
+                                   color=colors["text_container_primary"]),
+                            self.log_container
+                        ], spacing=6),
+                        padding=ft.padding.all(10),
+                        bgcolor=colors["secondary"],
+                        border_radius=8,
+                        margin=ft.margin.symmetric(vertical=2),
+                        height=150  # Altura compacta para log
+                    )
+                ], spacing=5, expand=True, scroll=ft.ScrollMode.AUTO)
+                
+                # Atualizar apenas o painel direito
+                self.app.right_panel.content = ft.Container(
+                    content=mobile_details,
+                    expand=True,
+                    padding=5,
+                    alignment=ft.alignment.top_left
+                )
+                self.app.right_panel.update()
+            
+            # print("DEBUG: Layout móvel aplicado - apenas painel direito em coluna única")
+            
+        else:
+            # Layout desktop: restaurar painel direito ao layout original
+            # Verificar se há card selecionado e restaurar layout original dos detalhes
+            if (hasattr(self.app, 'right_panel') and 
+                hasattr(self.app, 'detail_main_content') and
+                hasattr(self.app, 'no_selection_placeholder') and
+                self.app.right_panel.content != self.app.no_selection_placeholder):
+                
+                # Restaurar layout original dos detalhes no painel direito
+                self.app.right_panel.content = self.app.detail_main_content
+                self.app.right_panel.update()
+            
+            # print("DEBUG: Layout desktop aplicado - painel direito restaurado ao layout original")
+
 class VPCRApp:
+    EDITABLE_FIELDS = [
+        "Comments",
+        "Continuity",
+        "Link",
+        "RFQ",
+        "DRA",
+        "DQR",
+        "LOI",
+        "Tooling",
+        "Drawing",
+        "PO Alfa",
+        "SR",
+        "Deviation",
+        "PO Beta",
+        "PPAP",
+        "GBPA",
+        "EDI",
+        "SCR"
+    ]
+
     def __init__(self):
         self.theme_manager = ThemeManager()
         self.db_manager = DatabaseManager()
         self.icon_animator = NotificationIconAnimator()
+        # Gerenciador de layout responsivo
+        self.layout_manager = DetailLayoutManager(self)
         # Gerenciador de importação de arquivos
         self.file_import_manager = FileImportManager(self)
         # Sistema de debounce para updates
@@ -1919,6 +2087,7 @@ class VPCRApp:
             "Comments": "",
             "Log": ""
         }
+        self._original_detail_fields = {field: "" for field in self.EDITABLE_FIELDS}
         # Item selecionado atualmente
         self.selected_item = None
         self.selected_item_id = None
@@ -2455,9 +2624,11 @@ class VPCRApp:
     def main(self, page: ft.Page):
         self.page = page
         self.page.title = "VPCR App"
-        self.page.window_min_width = 1200
-        self.page.window_min_height = 800
         
+        # Configurações de janela
+        self.page.window_min_width = 1000
+        self.page.window_min_height = 600
+
         # Inicializar estruturas de cards
         self.init_card_structures()
         
@@ -2466,6 +2637,13 @@ class VPCRApp:
         
         # Criar componentes
         self.create_components()
+        
+        # Configurar callback de redimensionamento para layout responsivo  
+        self.page.on_resize = self.on_page_resize
+        
+        # Iniciar monitoramento periódico do tamanho da página
+        self._last_width = self.page.width or 1200
+        self._start_resize_monitor()
         
         # Inicializar animações dos ícones para itens com TODOs
         self.initialize_icon_animations()
@@ -2493,7 +2671,7 @@ class VPCRApp:
         tabs_control = ft.Tabs(
             tabs=[
                 ft.Tab(text="VPCR", content=self.create_vpcr_tab()),
-                ft.Tab(text="Indicadores", content=self.create_indicators_tab()),
+                ft.Tab(text="Analytics", content=self.create_indicators_tab()),
                 ft.Tab(text="Settings", content=self.create_settings_tab())
             ],
             selected_index=0,
@@ -2583,6 +2761,82 @@ class VPCRApp:
         except Exception as e:
             print(f"Erro ao esconder notificação: {e}")
 
+    def on_page_resize(self, e):
+        """Callback chamado quando a página é redimensionada."""
+        print(f"DEBUG: on_page_resize CHAMADO!")
+        
+        # Verificar e corrigir tamanhos mínimos
+        if hasattr(self, 'page') and self.page:
+            needs_update = False
+            
+            # Verificar largura mínima
+            current_width = e.width if hasattr(e, 'width') else (self.page.width or 1200)
+            current_height = e.height if hasattr(e, 'height') else (self.page.height or 800)
+            
+            if current_width < 1000:
+                if hasattr(self.page, 'window_width'):
+                    self.page.window_width = 1000
+                    needs_update = True
+                    
+            if current_height < 600:
+                if hasattr(self.page, 'window_height'):
+                    self.page.window_height = 600
+                    needs_update = True
+            
+            if needs_update:
+                try:
+                    self.page.update()
+                except Exception as ex:
+                    print(f"Erro ao corrigir tamanho mínimo: {ex}")
+        
+        if hasattr(self, 'layout_manager') and hasattr(self, 'page') and self.page:
+            try:
+                # Em Flet, o evento de resize contém as dimensões
+                page_width = e.width if hasattr(e, 'width') else (self.page.width or 1200)
+                # print(f"DEBUG: Resize detectado - largura: {page_width}px")
+                self.layout_manager.on_resize(page_width)
+            except Exception as ex:
+                print(f"Erro no callback de resize: {ex}")
+
+    def _start_resize_monitor(self):
+        """Inicia monitoramento periódico do tamanho da página."""
+        import threading
+        import time
+        
+        def monitor():
+            while True:
+                try:
+                    if hasattr(self, 'page') and self.page:
+                        current_width = self.page.width or 1200
+                        current_height = self.page.height or 800
+                        
+                        # Verificar e corrigir tamanhos mínimos
+                        needs_correction = False
+                        if hasattr(self.page, 'window_width') and self.page.window_width and self.page.window_width < 1000:
+                            self.page.window_width = 1000
+                            needs_correction = True
+                        if hasattr(self.page, 'window_height') and self.page.window_height and self.page.window_height < 600:
+                            self.page.window_height = 600
+                            needs_correction = True
+                        
+                        if needs_correction:
+                            try:
+                                self.page.update()
+                            except:
+                                pass
+                        
+                        if abs(current_width - self._last_width) > 10:  # Mudança significativa
+                            # print(f"DEBUG: MONITOR detectou mudança de {self._last_width} para {current_width}")
+                            self._last_width = current_width
+                            if hasattr(self, 'layout_manager'):
+                                self.layout_manager.on_resize(current_width)
+                    time.sleep(0.5)  # Verificar a cada 500ms
+                except Exception as e:
+                    print(f"Erro no monitor de resize: {e}")
+                    break
+        
+        monitor_thread = threading.Thread(target=monitor, daemon=True)
+        monitor_thread.start()
     # Substituir métodos antigos chamando notify
     def show_custom_notification(self, message, color=ft.Colors.BLUE_400, duration=3000):
         # Compat: mapear cor básica para tipo
@@ -2951,7 +3205,6 @@ class VPCRApp:
 
         # Botão de salvar (fica à esquerda do sino). Cor muda se item estiver "sujo".
         is_dirty = item_id in self.dirty_items
-        save_color = (ft.Colors.ORANGE_400 if is_dirty else colors["accent"]) if hasattr(ft.Colors, 'ORANGE_400') else (colors["accent"])
 
         def handle_save_click(e, current_item=item):
             self.save_card_changes(current_item)
@@ -2959,12 +3212,13 @@ class VPCRApp:
         save_button = ft.IconButton(
             icon=ft.Icons.SAVE,
             icon_size=24,
-            icon_color=save_color,
+            icon_color=colors["accent"],
             tooltip="Salvar alterações deste card",
             on_click=handle_save_click,
         )
         # Guardar referência para atualizações futuras de cor
         self.card_save_buttons[item_id] = save_button
+        self._update_save_button_visual(item_id, is_dirty)
 
         # Ícone de notificação (só aparece quando há TODOs)
         notification_button = ft.Icon(
@@ -4813,6 +5067,12 @@ class VPCRApp:
                 "Comments": item.get("Comments", ""),
                 "Log": item.get("Log", f"Selecionado: {item.get('Title', 'Item')}")
             })
+
+            # Capturar baseline dos campos editáveis para controle de alterações
+            self._original_detail_fields = {
+                field: self._normalize_field_value(self.detail_fields.get(field, ""))
+                for field in self.EDITABLE_FIELDS
+            }
             
             # Atualizar a UI dos containers direitos se eles existirem
             self.update_detail_containers()
@@ -4876,6 +5136,7 @@ class VPCRApp:
             # Limpar seleção atual
             self.selected_item = None
             self.selected_item_id = None
+            self._original_detail_fields = {field: "" for field in self.EDITABLE_FIELDS}
             
             # Limpar campos de detalhes
             if hasattr(self, 'detail_fields'):
@@ -5151,6 +5412,48 @@ class VPCRApp:
         except Exception:
             pass
 
+    def _normalize_field_value(self, value):
+        """Normaliza valores para comparação, tratando None como string vazia."""
+        if value is None:
+            return ""
+        return str(value)
+
+    def _has_pending_changes_for_selected_item(self):
+        """Verifica se há alterações pendentes nos campos editáveis do item selecionado."""
+        if not hasattr(self, 'selected_item') or not self.selected_item:
+            return False
+        if not hasattr(self, '_original_detail_fields') or self._original_detail_fields is None:
+            return False
+
+        for field in self.EDITABLE_FIELDS:
+            current = self._normalize_field_value(self.detail_fields.get(field, ""))
+            original = self._normalize_field_value(self._original_detail_fields.get(field, ""))
+            if current != original:
+                return True
+        return False
+
+    def _update_save_button_visual(self, item_id, dirty):
+        """Atualiza apenas o ícone de salvar para refletir o estado atual."""
+        if not hasattr(self, 'card_save_buttons'):
+            return
+
+        btn = self.card_save_buttons.get(item_id)
+        if not btn:
+            return
+
+        try:
+            colors = self.theme_manager.get_theme_colors()
+            if self.theme_manager.auto_save_enabled:
+                btn.icon_color = colors["accent"]
+                btn.tooltip = "Auto-save ativo"
+            else:
+                dirty_color = getattr(ft.Colors, "ORANGE_400", ft.Colors.ORANGE)
+                btn.icon_color = dirty_color if dirty else colors["accent"]
+                btn.tooltip = "Alterações não salvas" if dirty else "Salvar alterações deste card"
+            btn.update()
+        except Exception:
+            pass
+
     def _update_detail_field(self, field_name: str, value: str):
         """Atualiza o dicionário detail_fields quando um campo editável muda."""
         self.detail_fields[field_name] = value
@@ -5162,44 +5465,54 @@ class VPCRApp:
             if item_id is not None:
                 if not hasattr(self, 'dirty_items'):
                     self.dirty_items = set()
-                self.dirty_items.add(item_id)
-                
-                # Atualizar cor do botão de salvar apenas se auto-save estiver desabilitado
-                if not self.theme_manager.auto_save_enabled:
-                    if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
-                        btn = self.card_save_buttons[item_id]
-                        try:
-                            btn.icon_color = ft.Colors.ORANGE_400 if hasattr(ft.Colors, 'ORANGE_400') else ft.Colors.ORANGE
-                            btn.tooltip = "Alterações não salvas"
-                            btn.update()
-                        except Exception:
-                            pass
+
+                is_dirty = self._has_pending_changes_for_selected_item()
+                if is_dirty:
+                    self.dirty_items.add(item_id)
+                else:
+                    self.dirty_items.discard(item_id)
+
+                self._update_save_button_visual(item_id, is_dirty)
 
     def _auto_save_on_blur(self, field_name: str, value: str):
         """Auto-save otimizado - só salva se houve mudança real"""
-        # Verificar se o valor mudou
-        current_value = self.detail_fields.get(field_name, "")
-        if current_value == value:
-            return  # Não fazer nada se não mudou
-            
-        # Atualizar valor
+        # Atualizar valor final digitado
         self.detail_fields[field_name] = value
-        
-        # Auto-save com debounce para evitar saves excessivos
-        if self.theme_manager.auto_save_enabled and hasattr(self, 'selected_item') and self.selected_item:
-            # Cancelar save anterior se ainda não executou
+
+        if not hasattr(self, 'selected_item') or not self.selected_item:
+            return
+
+        item_id = self.selected_item.get("ID")
+        if item_id is None:
+            return
+
+        if not hasattr(self, 'dirty_items'):
+            self.dirty_items = set()
+
+        has_changes = self._has_pending_changes_for_selected_item()
+
+        if has_changes:
+            self.dirty_items.add(item_id)
+            self._update_save_button_visual(item_id, True)
+
+            # Auto-save com debounce para evitar saves excessivos
+            if self.theme_manager.auto_save_enabled:
+                if hasattr(self, '_auto_save_timer'):
+                    self._auto_save_timer.cancel()
+                self._auto_save_timer = threading.Timer(0.5, self._execute_auto_save)
+                self._auto_save_timer.start()
+        else:
+            self.dirty_items.discard(item_id)
+            self._update_save_button_visual(item_id, False)
             if hasattr(self, '_auto_save_timer'):
                 self._auto_save_timer.cancel()
-            
-            # Agendar save com delay
-            import threading
-            self._auto_save_timer = threading.Timer(0.5, self._execute_auto_save)
-            self._auto_save_timer.start()
     
     def _execute_auto_save(self):
         """Executa o auto-save de forma segura"""
         try:
             if hasattr(self, 'selected_item') and self.selected_item:
+                if not self._has_pending_changes_for_selected_item():
+                    return
                 self.save_card_changes(self.selected_item, show_notification=False)
         except Exception as e:
             print(f"Erro no auto-save: {e}")
@@ -5446,13 +5759,7 @@ class VPCRApp:
             for base in self.sample_data:
                 if base.get("ID") == item_id:
                     # Todos os campos editáveis que podem ser salvos
-                    editable_fields = [
-                        "Comments", "Continuity", "Link",  # Campos principais editáveis
-                        # Campos de Documentation
-                        "RFQ", "DRA", "DQR", "LOI", "Tooling", "Drawing",
-                        "PO Alfa", "SR", "Deviation", "PO Beta", "PPAP", 
-                        "GBPA", "EDI", "SCR"
-                    ]
+                    editable_fields = list(self.EDITABLE_FIELDS)
                     
                     # Mapear campos para nomes do banco de dados
                     db_field_map = {
@@ -5555,13 +5862,7 @@ class VPCRApp:
                 
             # Atualizar botão salvar
             if hasattr(self, 'card_save_buttons') and item_id in self.card_save_buttons:
-                btn = self.card_save_buttons[item_id]
-                btn.icon_color = self.theme_manager.get_theme_colors()["accent"]
-                btn.tooltip = "Salvar alterações deste card"
-                try:
-                    btn.update()
-                except Exception:
-                    pass
+                self._update_save_button_visual(item_id, False)
             
             # Recarregar dados do banco para sincronizar e atualizar display
             try:
@@ -5569,12 +5870,14 @@ class VPCRApp:
                 if updated_item and hasattr(self, 'selected_item') and self.selected_item:
                     if self.selected_item.get("ID") == item_id:
                         # Atualizar item selecionado com dados do banco
+                        reverse_map = {v: k for k, v in db_field_map.items()}
                         for key, value in updated_item.items():
                             # Mapear campos do banco de volta para display
-                            reverse_map = {v: k for k, v in db_field_map.items()}
                             display_field = reverse_map.get(key, key)
                             if display_field in self.selected_item:
                                 self.selected_item[display_field] = value
+                            if display_field in self.detail_fields:
+                                self.detail_fields[display_field] = "" if value is None else value
                         
                         # Forçar atualização do painel de detalhes
                         if hasattr(self, 'detail_view') and self.detail_view:
@@ -5583,6 +5886,13 @@ class VPCRApp:
                         print(f"DEBUG: Item {item_id} recarregado e display atualizado")
             except Exception as e:
                 print(f"DEBUG: Erro ao recarregar item {item_id}: {e}")
+            
+            # Atualizar baseline dos campos editáveis para refletir o estado salvo
+            if item_id == self.selected_item_id:
+                self._original_detail_fields = {
+                    field: self._normalize_field_value(self.detail_fields.get(field, ""))
+                    for field in self.EDITABLE_FIELDS
+                }
                     
             # Feedback visual usando a notificação personalizada (apenas se solicitado)
             if show_notification:
@@ -6188,8 +6498,17 @@ class VPCRApp:
             expand=True
         )
 
-        # Retornar layout final
-        return ft.Container(
+        # Configurar o layout manager com as seções
+        self.layout_manager.set_sections(
+            status_line=self.status_line,
+            overview_container=self.detail_overview,
+            request_container=self.detail_request,
+            doc_container=self.detail_doc,
+            log_container=self.detail_log
+        )
+
+        # Container principal que será trocado entre layouts
+        self.main_vpcr_container = ft.Container(
             content=ft.Row([
                 left_column,
                 self.right_panel
@@ -6198,6 +6517,14 @@ class VPCRApp:
             padding=10,
             alignment=ft.alignment.top_left
         )
+
+        # Armazenar referências para o layout manager
+        self.left_column = left_column
+        self.layout_manager.main_container = self.main_vpcr_container
+        self.layout_manager.left_column = left_column
+
+        # Retornar layout final
+        return self.main_vpcr_container
     
     def open_import_dialog(self):
         """Abre janela de importação utilizando FileImportManager."""
@@ -6286,7 +6613,226 @@ class VPCRApp:
         indicators["top_suppliers"] = top_n(indicators["supplier_counts"])
         indicators["top_sourcing_managers"] = top_n(indicators["sourcing_manager_counts"])
 
+        # Calcular tempo médio entre abertura e fechamento
+        indicators["time_analysis"] = self.calculate_time_metrics()
+
         return indicators
+    
+    def calculate_time_metrics(self):
+        """Calcula métricas de tempo entre abertura e fechamento dos VPCRs"""
+        from datetime import datetime
+        
+        time_metrics = {
+            "total_with_dates": 0,
+            "average_days": 0,
+            "median_days": 0,
+            "min_days": 0,
+            "max_days": 0,
+            "days_distribution": {},
+            "yearly_averages": {}  # Média por ano
+        }
+        
+        valid_durations = []
+        yearly_durations = {}  # Armazenar durações por ano
+        
+        for item in self.sample_data:
+            initiated_date = item.get("Initiated Date", "").strip()
+            closed_date = item.get("Closed Date", "").strip()
+            
+            # Verificar se ambas as datas existem e não estão vazias
+            if not initiated_date or not closed_date:
+                continue
+                
+            try:
+                # Tentar diferentes formatos de data
+                date_formats = [
+                    "%Y-%m-%d",      # 2023-12-31
+                    "%d/%m/%Y",      # 31/12/2023
+                    "%m/%d/%Y",      # 12/31/2023
+                    "%d-%m-%Y",      # 31-12-2023
+                    "%Y/%m/%d",      # 2023/12/31
+                ]
+                
+                init_date_obj = None
+                closed_date_obj = None
+                
+                # Tentar converter initiated_date
+                for fmt in date_formats:
+                    try:
+                        init_date_obj = datetime.strptime(initiated_date, fmt)
+                        break
+                    except ValueError:
+                        continue
+                
+                # Tentar converter closed_date
+                for fmt in date_formats:
+                    try:
+                        closed_date_obj = datetime.strptime(closed_date, fmt)
+                        break
+                    except ValueError:
+                        continue
+                
+                # Se conseguiu converter ambas as datas
+                if init_date_obj and closed_date_obj:
+                    # Calcular diferença em dias
+                    duration = (closed_date_obj - init_date_obj).days
+                    
+                    # Considerar apenas durações positivas (data de fechamento após abertura)
+                    if duration >= 0:
+                        valid_durations.append(duration)
+                        
+                        # Agrupar por ano da data de fechamento
+                        closed_year = closed_date_obj.year
+                        if closed_year not in yearly_durations:
+                            yearly_durations[closed_year] = []
+                        yearly_durations[closed_year].append(duration)
+                        
+                        # Distribuição por faixas de dias
+                        if duration <= 30:
+                            range_key = "0-30 dias"
+                        elif duration <= 90:
+                            range_key = "31-90 dias"
+                        elif duration <= 180:
+                            range_key = "91-180 dias"
+                        elif duration <= 365:
+                            range_key = "181-365 dias"
+                        else:
+                            range_key = "Mais de 1 ano"
+                        
+                        time_metrics["days_distribution"][range_key] = time_metrics["days_distribution"].get(range_key, 0) + 1
+                        
+            except Exception as e:
+                # Ignorar erros de conversão de data
+                continue
+        
+        # Calcular estatísticas se há dados válidos
+        if valid_durations:
+            time_metrics["total_with_dates"] = len(valid_durations)
+            
+            # Cálculos em dias
+            time_metrics["average_days"] = round(sum(valid_durations) / len(valid_durations), 1)
+            time_metrics["min_days"] = min(valid_durations)
+            time_metrics["max_days"] = max(valid_durations)
+            
+            sorted_durations = sorted(valid_durations)
+            n = len(sorted_durations)
+            time_metrics["median_days"] = sorted_durations[n // 2] if n % 2 == 1 else round((sorted_durations[n // 2 - 1] + sorted_durations[n // 2]) / 2, 1)
+            
+            # Calcular médias por ano
+            for year, durations in yearly_durations.items():
+                if durations:
+                    yearly_avg = round(sum(durations) / len(durations), 1)
+                    time_metrics["yearly_averages"][year] = {
+                        "average_days": yearly_avg,
+                        "count": len(durations)
+                    }
+        
+        return time_metrics
+    
+    def create_time_analysis_card(self, time_analysis):
+        """Cria o card de análise de tempo entre abertura e fechamento"""
+        colors = self.theme_manager.get_theme_colors()
+        
+        if time_analysis["total_with_dates"] == 0:
+            return ft.Container(
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.Icons.SCHEDULE, size=24, color=colors["accent"]),
+                            ft.Text("Tempo Médio de Resolução", size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
+                        ], alignment=ft.MainAxisAlignment.START),
+                        ft.Divider(height=1, color=colors["border"], thickness=1),
+                        ft.Text("Nenhum VPCR com ambas as datas disponível", color=colors["text_container_secondary"], size=12, text_align=ft.TextAlign.CENTER)
+                    ], spacing=12),
+                    padding=20,
+                    bgcolor=colors["card_bg"],
+                    border_radius=12,
+                    border=ft.border.all(1, colors["border"])
+                )
+            )
+        
+        # Estatísticas principais
+        stats_items = []
+        
+        # Média geral
+        stats_items.append(
+            ft.Row([
+                ft.Text("Média Geral:", size=14, color=colors["text_container_primary"], weight=ft.FontWeight.BOLD),
+                ft.Text(f"{time_analysis['average_days']} dias", size=14, color=colors["accent"], weight=ft.FontWeight.BOLD)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        )
+        
+        # Mediana
+        stats_items.append(
+            ft.Row([
+                ft.Text("Mediana:", size=14, color=colors["text_container_primary"]),
+                ft.Text(f"{time_analysis['median_days']} dias", size=14, color=colors["text_container_secondary"])
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        )
+        
+        # Faixa (min - max)
+        stats_items.append(
+            ft.Row([
+                ft.Text("Faixa:", size=14, color=colors["text_container_primary"]),
+                ft.Text(f"{time_analysis['min_days']}-{time_analysis['max_days']} dias", size=14, color=colors["text_container_secondary"])
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        )
+        
+        # Médias por ano
+        yearly_items = []
+        yearly_averages = time_analysis.get("yearly_averages", {})
+        
+        for year in sorted(yearly_averages.keys(), reverse=True):  # Anos mais recentes primeiro
+            year_data = yearly_averages[year]
+            yearly_items.append(
+                ft.Row([
+                    ft.Text(f"Ano {year}:", size=13, color=colors["text_container_primary"], expand=True),
+                    ft.Text(f"{year_data['average_days']} dias", size=13, color=colors["accent"], weight=ft.FontWeight.BOLD),
+                    ft.Text(f"({year_data['count']} VPCRs)", size=11, color=colors["text_container_secondary"])
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            )
+        
+        # Distribuição por faixas de tempo
+        distribution_items = []
+        total_with_dates = time_analysis["total_with_dates"]
+        
+        for range_label, count in sorted(time_analysis["days_distribution"].items(), key=lambda x: x[1], reverse=True):
+            percent = (count / total_with_dates) * 100 if total_with_dates > 0 else 0
+            distribution_items.append(
+                ft.Column([
+                    ft.Row([
+                        ft.Text(range_label, size=12, color=colors["text_container_primary"], expand=True),
+                        ft.Text(f"{count}", size=12, weight=ft.FontWeight.BOLD, color=colors["accent"]),
+                        ft.Text(f"{percent:.1f}%", size=11, color=colors["text_container_secondary"])
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.ProgressBar(value=min(percent / 100, 1.0), height=4, color=colors["accent"], bgcolor=colors["card_bg"])
+                ], spacing=4)
+            )
+        
+        return ft.Container(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.SCHEDULE, size=24, color=colors["accent"]),
+                        ft.Text("Tempo Médio de Resolução", size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
+                    ], alignment=ft.MainAxisAlignment.START),
+                    ft.Divider(height=1, color=colors["border"], thickness=1),
+                    ft.Text(f"Análise baseada em {total_with_dates} VPCRs com datas completas", 
+                            size=11, color=colors["text_container_secondary"], italic=True),
+                    ft.Column(stats_items, spacing=8),
+                    ft.Divider(height=1, color=colors["border"], thickness=1),
+                    ft.Text("Média por Ano", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                    ft.Column(yearly_items, spacing=6) if yearly_items else ft.Text("Nenhum dado anual disponível", color=colors["text_container_secondary"], size=12),
+                    ft.Divider(height=1, color=colors["border"], thickness=1),
+                    ft.Text("Distribuição por Tempo", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                    ft.Column(distribution_items, spacing=8) if distribution_items else ft.Text("Sem distribuição disponível", color=colors["text_container_secondary"], size=12)
+                ], spacing=12),
+                padding=20,
+                bgcolor=colors["card_bg"],
+                border_radius=12,
+                border=ft.border.all(1, colors["border"])
+            )
+        )
     
     def create_indicators_tab(self):
         """Cria o conteúdo da aba Indicadores"""
@@ -6429,11 +6975,15 @@ class VPCRApp:
             col_span=None
         )
 
+        # Card de análise de tempo
+        time_analysis_card = self.create_time_analysis_card(indicators["time_analysis"])
+
         type_with_continuity = ft.Container(
             col={"xs": 12, "md": 6},
             content=ft.Column([
                 type_card,
-                continuity_card
+                continuity_card,
+                time_analysis_card
             ], spacing=16)
         )
 
