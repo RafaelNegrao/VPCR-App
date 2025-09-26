@@ -68,8 +68,8 @@ class FileImportManager:
         """Abre janela do sistema para seleção de arquivos Excel."""
         if self.file_picker is None:
             self.build_file_picker()
-        # Filtros de extensão (xlsx, xlsm, xlsb - xlsb não suportado por openpyxl mas permitimos seleção)
-        self.file_picker.pick_files(allow_multiple=True, allowed_extensions=['xlsx','xlsm','xlsb'])
+        # Filtros de extensão (xlsx, xlsm, xlsb, xls - xlsb não suportado; xls não extrai links)
+        self.file_picker.pick_files(allow_multiple=True, allowed_extensions=['xlsx','xlsm','xlsb','xls'])
 
     def open_import_window(self):
         """Abre janela principal de importação (parecida com a de TODO)."""
@@ -267,32 +267,80 @@ class FileImportManager:
         header_ok = False
         errors: List[str] = []
         header_values: List[str] = []
+        
+        # Primeiro verificar se o arquivo existe
+        if not os.path.exists(path):
+            errors.append(f"Arquivo não encontrado: {os.path.basename(path)}")
+            return {
+                'path': path,
+                'header_ok': False,
+                'errors': errors,
+                'header': []
+            }
+        
         # Ler arquivo
         if openpyxl is None and path.lower().endswith(('.xlsx', '.xlsm')):
             errors.append("Dependência 'openpyxl' não instalada")
+        elif path.lower().endswith('.xls'):
+            try:
+                import xlrd
+            except ImportError:
+                errors.append("Dependência 'xlrd' não instalada (necessária para arquivos .xls)")
         else:
             if path.lower().endswith('.xlsb'):
-                errors.append("Formato .xlsb não suportado (use .xlsx ou .xlsm)")
+                errors.append("Formato .xlsb não suportado (use .xlsx, .xlsm ou .xls)")
             else:
                 try:
-                    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-                    ws = wb.active
-                    for idx in range(1, len(self.EXPECTED_HEADER_ORDER) + 1):
-                        cell_value = ws.cell(row=1, column=idx).value
-                        header_values.append(str(cell_value).strip() if cell_value is not None else "")
-                    wb.close()
+                    # Detectar formato do arquivo e usar engine apropriado
+                    try:
+                        import pandas as pd
+                        
+                        # Função para detectar formato real
+                        def detect_format(file_path):
+                            try:
+                                with open(file_path, 'rb') as f:
+                                    header = f.read(8)
+                                if header.startswith(b'PK') or header.startswith(b'<?xml'):
+                                    return 'openpyxl'
+                                elif header.startswith(b'\xd0\xcf\x11\xe0') or header.startswith(b'\x09\x08'):
+                                    return 'xlrd'
+                                else:
+                                    return 'openpyxl'  # fallback
+                            except:
+                                return 'openpyxl'
+                        
+                        engine = detect_format(path)
+                        
+                        try:
+                            df = pd.read_excel(path, engine=engine, nrows=1)
+                        except:
+                            # Tentar o outro engine se falhar
+                            fallback_engine = 'xlrd' if engine == 'openpyxl' else 'openpyxl'
+                            df = pd.read_excel(path, engine=fallback_engine, nrows=1)
+                            
+                        header_values = [str(col).strip() for col in df.columns]
+                    except Exception as ex:
+                        errors.append(f"Erro ao ler arquivo: {ex}")
                 except Exception as ex:
                     errors.append(f"Erro leitura: {ex}")
 
         if header_values:
-            if header_values[0] != 'VPCR Project ID':
-                errors.append("A1 != 'VPCR Project ID'")
-            if len(header_values) >= 20 and header_values[19] != 'Last Updated Date':
-                errors.append("Coluna T != 'Last Updated Date'")
-            if header_values[:len(self.EXPECTED_HEADER_ORDER)] != self.EXPECTED_HEADER_ORDER:
-                errors.append("Ordem diferente do modelo")
-            if not errors:
-                header_ok = True
+            # Para arquivos .xls, fazer validação mais flexível
+            if path.lower().endswith('.xls'):
+                if len(header_values) > 0 and 'VPCR Project ID' in str(header_values[0]):
+                    header_ok = True
+                else:
+                    errors.append("Primeira coluna deve conter 'VPCR Project ID'")
+            else:
+                # Validação rigorosa para .xlsx e .xlsm
+                if header_values[0] != 'VPCR Project ID':
+                    errors.append("A1 != 'VPCR Project ID'")
+                if len(header_values) >= 20 and header_values[19] != 'Last Updated Date':
+                    errors.append("Coluna T != 'Last Updated Date'")
+                if header_values[:len(self.EXPECTED_HEADER_ORDER)] != self.EXPECTED_HEADER_ORDER:
+                    errors.append("Ordem diferente do modelo")
+                if not errors:
+                    header_ok = True
         return {
             'path': path,
             'header_ok': header_ok,
@@ -358,15 +406,11 @@ class FileImportManager:
         colors = self.app.theme_manager.get_theme_colors()
         
         # Criar componentes de progresso (apenas barra e texto)
-        self.progress_bar = ft.ProgressBar(width=None, color=colors['accent'], expand=True, height=6)
+        self.progress_bar = ft.ProgressBar(width=400, color=colors['accent'], height=8)
         self.progress_text = ft.Text("Preparando importação...", size=14, weight=ft.FontWeight.BOLD)
         self.progress_details = ft.Text("", size=1, color=colors['text_container_secondary'])
         
-        # Container para o resultado final (inicialmente vazio)
-        self.result_container = ft.Container(
-            content=ft.Column([], spacing=10),
-            visible=False
-        )
+        # Container removido conforme solicitado
         
         # Limpar container atual e adicionar componentes de progresso
         if hasattr(self, 'files_list_container') and self.files_list_container:
@@ -376,13 +420,14 @@ class FileImportManager:
             # Novo conteúdo com progresso (mais simples)
             progress_content = ft.Column([
                 ft.Text("Importação em Andamento", size=16, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']),
-                ft.Container(height=3),  # Espaçamento
+                ft.Container(height=8),  # Espaçamento
                 self.progress_text,
+                ft.Container(height=4),  # Pequeno espaço antes da barra
                 self.progress_bar,
+                ft.Container(height=4),  # Pequeno espaço depois da barra
                 self.progress_details,
-                ft.Container(height=3),  # Espaçamento
-                self.result_container  # Container para resultado final
-            ], spacing=8, alignment=ft.MainAxisAlignment.START)
+                ft.Container(height=8)  # Espaçamento final
+            ], spacing=5, alignment=ft.MainAxisAlignment.START)
             
             self.files_list_container.content = progress_content
             
@@ -455,19 +500,21 @@ class FileImportManager:
     
     def _show_import_results(self, total_lines, imported, updated, files_count, errors_count):
         """Mostra os resultados finais da importação na janela"""
-        if hasattr(self, 'result_container') and self.result_container:
+        # Atualizar progresso para mostrar conclusão
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.value = 1.0  # 100%
+        if hasattr(self, 'progress_text'):
+            self.progress_text.value = "✅ Importação Concluída!"
+        if hasattr(self, 'progress_details'):
+            self.progress_details.value = ""
+            
+        # Adicionar resumo dos resultados ao log de progresso
+        if hasattr(self, 'progress_log'):
             colors = self.app.theme_manager.get_theme_colors()
             
-            # Limpar progresso anterior
-            if hasattr(self, 'progress_bar'):
-                self.progress_bar.value = 1.0  # 100%
-            if hasattr(self, 'progress_text'):
-                self.progress_text.value = "✅ Importação Concluída!"
-            if hasattr(self, 'progress_details'):
-                self.progress_details.value = ""
-            
-            # Criar resumo dos resultados
-            result_content = ft.Column([
+            # Limpar log e adicionar resultados
+            self.progress_log.controls.clear()
+            self.progress_log.controls.extend([
                 ft.Container(height=10),
                 ft.Text("📊 Resumo da Importação", size=14, weight=ft.FontWeight.BOLD, color=colors['text_container_primary']),
                 ft.Divider(),
@@ -487,35 +534,20 @@ class FileImportManager:
                     ft.Icon(ft.Icons.FOLDER, color=colors['accent'], size=20),
                     ft.Text(f"Arquivos processados: {files_count}", size=13, color=colors['text_container_primary'])
                 ], spacing=10),
-            ], spacing=8)
+            ])
             
             if errors_count > 0:
-                result_content.controls.append(
+                self.progress_log.controls.append(
                     ft.Row([
                         ft.Icon(ft.Icons.ERROR, color=ft.Colors.RED, size=20),
                         ft.Text(f"Erros encontrados: {errors_count}", size=13, color=ft.Colors.RED)
                     ], spacing=10)
                 )
             
-            # Botão para fechar
-            result_content.controls.append(ft.Container(height=10))
-            result_content.controls.append(
-                ft.ElevatedButton(
-                    "Fechar",
-                    icon=ft.Icons.CLOSE,
-                    on_click=lambda e: self._close_import_dialog(),
-                    bgcolor=colors.get('accent', ft.Colors.BLUE),
-                    color=ft.Colors.WHITE
-                )
-            )
-            
-            self.result_container.content = result_content
-            self.result_container.visible = True
-            
-            try:
-                self.app.page.update()
-            except Exception:
-                pass
+        try:
+            self.app.page.update()
+        except Exception:
+            pass
     
     def _close_import_dialog(self):
         """Fecha o diálogo de importação e limpa os arquivos"""
@@ -610,7 +642,10 @@ class FileImportManager:
                 try:
                     # Contar linhas do arquivo antes da importação
                     import pandas as pd
-                    df = pd.read_excel(file_path)
+                    try:
+                        df = pd.read_excel(file_path)
+                    except Exception as e:
+                        raise Exception(f"Erro ao ler arquivo: {e}")
                     lines_in_file = len(df)
                     total_lines += lines_in_file
                     
@@ -775,13 +810,13 @@ class NotificationIconAnimator:
                 original_color = icon_button.icon_color
                 while item_id in self.animated_icons:
                     # Fade out - ficar mais transparente/escuro
-                    icon_button.icon_color = ft.Colors.ORANGE_200
+                    icon_button.icon_color = ft.Colors.YELLOW_200
                     icon_button.update()
                     await asyncio.sleep(0.5)
                     
                     # Fade in - voltar para cor original
                     if item_id in self.animated_icons:  # Verifica se ainda deve animar
-                        icon_button.icon_color = ft.Colors.ORANGE
+                        icon_button.icon_color = ft.Colors.YELLOW
                         icon_button.update()
                         await asyncio.sleep(0.5)
             except Exception as e:
@@ -800,7 +835,7 @@ class NotificationIconAnimator:
             del self.animation_tasks[item_id]
         
         # Restaura cor original
-        icon_button.icon_color = ft.Colors.ORANGE
+        icon_button.icon_color = ft.Colors.YELLOW
         icon_button.update()
     
     def cleanup(self):
@@ -1186,14 +1221,119 @@ class DatabaseManager:
             if conn:
                 conn.close()
     
+    def extract_vpcr_title_link(self, file_path, row_index, col_name="VPCR Title"):
+        """Extrai o link incorporado no campo VPCR Title usando openpyxl"""
+        try:
+            if not openpyxl:
+                return ""
+            
+            # Para arquivos .xls, verificar se na verdade é .xlsx renomeado
+            if file_path.lower().endswith('.xls'):
+                # Tentar detectar se é realmente .xls ou .xlsx renomeado
+                try:
+                    with open(file_path, 'rb') as f:
+                        header = f.read(8)
+                    # Se começar com XML, é .xlsx renomeado
+                    if header.startswith(b'<?xml') or header.startswith(b'PK'):
+                        # É um .xlsx renomeado, pode tentar extrair links
+                        pass
+                    else:
+                        # É .xls verdadeiro, não suporta links
+                        return ""
+                except:
+                    return ""
+            
+            # Abrir workbook com openpyxl para acessar hyperlinks
+            wb = openpyxl.load_workbook(file_path, data_only=False)
+            ws = wb.active
+            
+            # Encontrar a coluna do VPCR Title
+            header_row = 1
+            title_col = None
+            for col in range(1, ws.max_column + 1):
+                cell_value = ws.cell(row=header_row, column=col).value
+                if cell_value and str(cell_value).strip() == col_name:
+                    title_col = col
+                    break
+            
+            if title_col is None:
+                # Tentar buscar na primeira planilha se não encontrou na ativa
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    for col in range(1, ws.max_column + 1):
+                        cell_value = ws.cell(row=1, column=col).value
+                        if cell_value and str(cell_value).strip() == col_name:
+                            title_col = col
+                            break
+                    if title_col:
+                        break
+            
+            if title_col is None:
+                return ""
+            
+            # Acessar a célula específica (row_index + 2 porque pandas é 0-indexed e há header)
+            cell = ws.cell(row=row_index + 2, column=title_col)
+            
+            # Verificar se há hyperlink
+            if cell.hyperlink and cell.hyperlink.target:
+                # Limpar o link removendo caracteres especiais se necessário
+                link = str(cell.hyperlink.target).strip()
+                return link
+            
+            return ""
+            
+        except Exception as e:
+            print(f"Erro ao extrair link do VPCR Title na linha {row_index + 1}: {e}")
+            return ""
+
     def import_from_excel(self, file_path, progress_callback=None):
         """Importa dados do Excel comparando com dados existentes e gerando logs apenas para mudanças"""
         try:
             import pandas as pd
             import time
             
-            # Ler o arquivo Excel
-            df = pd.read_excel(file_path)
+            # Ler o arquivo Excel com detecção robusta de formato
+            def detect_excel_format(file_path):
+                """Detecta o formato real do arquivo Excel baseado no conteúdo"""
+                try:
+                    with open(file_path, 'rb') as f:
+                        header = f.read(8)
+                        
+                    # Arquivos .xlsx/.xlsm são ZIP (começam com PK)
+                    if header.startswith(b'PK'):
+                        return 'openpyxl'
+                    # Arquivos .xls verdadeiros têm assinatura específica
+                    elif header.startswith(b'\xd0\xcf\x11\xe0') or header.startswith(b'\x09\x08'):
+                        return 'xlrd'
+                    # Se começar com <?xml, é XML mascarado como .xls
+                    elif header.startswith(b'<?xml'):
+                        return 'openpyxl'
+                    else:
+                        # Fallback: tentar openpyxl primeiro (mais comum)
+                        return 'openpyxl'
+                except Exception:
+                    return 'openpyxl'
+            
+            # Verificar se arquivo existe
+            if not os.path.exists(file_path):
+                raise Exception(f"Arquivo não encontrado: {file_path}")
+            
+            # Detectar formato e usar engine apropriado
+            engine = detect_excel_format(file_path)
+            
+            try:
+                df = pd.read_excel(file_path, engine=engine)
+            except Exception as e:
+                # Se falhar, tentar o outro engine
+                fallback_engine = 'xlrd' if engine == 'openpyxl' else 'openpyxl'
+                try:
+                    df = pd.read_excel(file_path, engine=fallback_engine)
+                except Exception as e2:
+                    # Se ambos falharem, dar uma mensagem mais informativa
+                    error_msg = f"Não foi possível ler o arquivo Excel '{os.path.basename(file_path)}'.\n"
+                    error_msg += f"Erro com {engine}: {str(e)[:100]}...\n"
+                    error_msg += f"Erro com {fallback_engine}: {str(e2)[:100]}..."
+                    raise Exception(error_msg)
             
             # Mapear colunas do Excel para campos do banco
             column_mapping = {
@@ -1256,6 +1396,13 @@ class DatabaseManager:
                                 value = str(value)
                             
                             excel_data[db_field] = value
+                    
+                    # Extrair link do campo VPCR Title e salvar no campo link_vpcr
+                    vpcr_title_link = self.extract_vpcr_title_link(file_path, index, "VPCR Title")
+                    if vpcr_title_link:
+                        excel_data['link_vpcr'] = vpcr_title_link
+                    else:
+                        excel_data['link_vpcr'] = ""
                     
                     # Verificar se item já existe no banco (comparar com coluna 'vpcr')
                     existing_item = self.get_item_by_vpcr(vpcr_project_id)
@@ -1324,6 +1471,10 @@ class DatabaseManager:
                                         progress_callback(f"Linha {index + 1}: {vpcr_project_id} - Status alterado para 'Work Complete', closed_date definido automaticamente para {current_date}")
                                 
                                 if update_fields:
+                                    # Adicionar new_data=True para itens atualizados
+                                    update_fields.append("new_data = ?")
+                                    update_values.append(True)
+                                    
                                     update_sql = f'UPDATE vpcr SET {", ".join(update_fields)} WHERE vpcr = ?'
                                     update_values.append(vpcr_project_id)
                                     cursor.execute(update_sql, update_values)
@@ -1346,9 +1497,12 @@ class DatabaseManager:
                             
                             # Item novo - inserir e registrar log "initial input"
                             fields = list(excel_data.keys())
+                            # Adicionar new_data como True para itens novos
+                            fields.append('new_data')
                             placeholders = ', '.join(['?' for _ in fields])
                             field_names = ', '.join(fields)
                             values = list(excel_data.values())
+                            values.append(True)  # Marcar como novo
                             
                             insert_sql = f'INSERT INTO vpcr ({field_names}) VALUES ({placeholders})'
                             cursor.execute(insert_sql, values)
@@ -1472,7 +1626,8 @@ class DatabaseManager:
                     'Change Manager': item_dict.get('change_manager', ''),
                     'Affected Items': item_dict.get('items_affected', ''),
                     'Desired Production Date at Affected Plant(s)': item_dict.get('desired_production_date', ''),
-                    'SCR Item ID': item_dict.get('scr_item_id', '')
+                    'SCR Item ID': item_dict.get('scr_item_id', ''),
+                    'new_data': item_dict.get('new_data', False)
                 }
                 
                 # Processar campos que devem ser listas (quebrados por ;)
@@ -1685,6 +1840,9 @@ class VPCRApp:
         self.icon_animator = NotificationIconAnimator()
         # Gerenciador de importação de arquivos
         self.file_import_manager = FileImportManager(self)
+        # Sistema de debounce para updates
+        self._update_queue = set()
+        self._update_timer = None
         # Dicionário para rastrear ícones animados
         self.animated_icons = {}
         # Cabeçalho do 'banco de dados' — deve corresponder ao Controle VPCR.xlsb
@@ -1701,7 +1859,9 @@ class VPCRApp:
 
         # Carregar dados do banco de dados ao inicializar
         self.sample_data = self.load_data_from_db()
-        self.filtered_data = self.sample_data.copy()
+        # Inicializar sem mostrar cards - só aparecem após filtrar
+        self.filtered_data = []
+        self.has_any_filter_applied = False
         # Campos visíveis nos cards (configurável nas Settings)
         self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
         # Carregar configuração persistida de campos visíveis (se existir)
@@ -1709,6 +1869,9 @@ class VPCRApp:
         # Estado para seleção/exportação de cards
         self.card_select_mode = False
         self.card_selection = set()  # IDs selecionados para exportação
+        
+        # Estado dos filtros (expandidos/recolhidos)
+        self.filters_expanded = False
         
         # Rastrear itens recentemente atualizados para exibir ícone "new"
         self.recently_updated_items = set()  # IDs de itens recentemente atualizados
@@ -2192,20 +2355,28 @@ class VPCRApp:
             pass
     
     def load_data_from_db(self):
-        """Carrega dados do banco de dados na inicialização"""
+        """Carrega dados otimizado com cache"""
+        # Usar cache se disponível
+        if hasattr(self, '_cached_data') and self._cached_data:
+            return self._cached_data
+            
         try:
-            # Buscar itens do banco de dados
             db_items = self.db_manager.get_all_items()
             
             if db_items:
-                print(f"Dados carregados na inicialização: {len(db_items)} itens do banco de dados")
+                # Cache dos dados por 30 segundos
+                self._cached_data = db_items
+                import threading
+                threading.Timer(30, lambda: setattr(self, '_cached_data', None)).start()
+                
+                print(f"Dados carregados: {len(db_items)} itens")
                 return db_items
             else:
-                print("Nenhum item encontrado no banco de dados")
+                print("Banco vazio")
                 return []
                 
         except Exception as e:
-            print(f"Erro ao carregar dados do banco na inicialização: {e}")
+            print(f"Erro ao carregar dados: {e}")
             return []
 
     def refresh_data_from_db(self):
@@ -2357,36 +2528,30 @@ class VPCRApp:
         self.page.add(self._overlay_stack)
 
     def notify(self, message: str, kind: str = "info", auto_hide: int = 3000):
-        """Exibe uma notificação simples no topo.
-        kind: info | success | error | warn
-        auto_hide: ms (0 = não esconder automaticamente)
-        """
+        """Notificação otimizada - evita updates desnecessários"""
         color_map = {
             "info": ft.Colors.BLUE_600,
-            "success": ft.Colors.GREEN_600,
+            "success": ft.Colors.GREEN_600, 
             "error": ft.Colors.RED_600,
             "warn": ft.Colors.ORANGE_600
         }
         bgcolor = color_map.get(kind, ft.Colors.BLUE_600)
-        print(f"[NOTIFY] kind={kind} msg={message}")
+        
         try:
+            # Cancelar notificação anterior
+            if hasattr(self, '_notification_timer') and self._notification_timer:
+                self._notification_timer.cancel()
+            
+            # Atualizar conteúdo
             self._notification_text.value = message
             self._notification_bar.bgcolor = bgcolor
             self._notification_bar.visible = True
-            # Garantir que o container de notificação está no Stack (último para ficar por cima)
-            if self._notification_bar not in self._overlay_stack.controls:
-                self._overlay_stack.controls.append(self._notification_bar)
-            else:
-                # mover para topo se não for último
-                idx = self._overlay_stack.controls.index(self._notification_bar)
-                if idx != len(self._overlay_stack.controls) - 1:
-                    self._overlay_stack.controls.pop(idx)
-                    self._overlay_stack.controls.append(self._notification_bar)
+            
+            # Update único
             self._overlay_stack.update()
-            if self.page:
-                self.page.update()
+            
         except Exception as e:
-            print(f"Falha ao exibir notificação: {e}")
+            print(f"Erro notificação: {e}")
 
         # Cancelar timer anterior
         if self._notification_timer:
@@ -2481,15 +2646,18 @@ class VPCRApp:
         
         # --- filtros com multiseleção usando Chips ---
         # containers para chips de multiseleção
-        # Larguras uniformes para todos os filtros
-        uniform_width = 160
+        # Calcular largura para ocupar toda a largura disponível
+        # Container tem 400px, com padding ~30px e spacing 8px entre filtros
+        available_width = 400 - 30  # Descontando padding do container
+        filter_width = (available_width - 8) // 2  # Dividir por 2 colunas menos o spacing
+        
         self.filter_widths = {
-            "VPCR": uniform_width,
-            "Sourcing Manager": uniform_width,
-            "Status": uniform_width,
-            "Supplier": uniform_width,
-            "Requestor": uniform_width,
-            "Continuity": uniform_width,
+            "VPCR": filter_width,
+            "Sourcing Manager": filter_width,
+            "Status": filter_width,
+            "Supplier": filter_width,
+            "Requestor": filter_width,
+            "Continuity": filter_width,
         }
         self.filter_order = [
             "VPCR",
@@ -2508,7 +2676,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=uniform_width,
+            width=filter_width,
             height=filter_height
         )
         
@@ -2518,7 +2686,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=uniform_width,
+            width=filter_width,
             height=filter_height
         )
         
@@ -2528,7 +2696,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=uniform_width,
+            width=filter_width,
             height=filter_height
         )
         
@@ -2538,7 +2706,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=uniform_width,
+            width=filter_width,
             height=filter_height
         )
         
@@ -2548,7 +2716,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=uniform_width,
+            width=filter_width,
             height=filter_height
         )
         
@@ -2558,7 +2726,7 @@ class VPCRApp:
             border=ft.border.all(1, colors["field_border"]),
             border_radius=8,
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
-            width=uniform_width,
+            width=filter_width,
             height=filter_height
         )
         
@@ -2597,26 +2765,36 @@ class VPCRApp:
         requestor_sel = self.filter_selections.get("Requestor", set())
         continuity_sel = self.filter_selections.get("Continuity", set())
         
-        # Salvar IDs com animações antes de filtrar para preservá-las
-        animated_before_filter = set(self.animated_icons.keys())
+        # Verificar se há algum filtro aplicado
+        self.has_any_filter_applied = (
+            bool(vpcr_sel) or bool(sm_sel) or bool(status_multi_sel) or 
+            bool(supplier_sel) or bool(requestor_sel) or bool(continuity_sel)
+        )
         
-        self.filtered_data = []
-        for item in self.sample_data:
-            def matches_multi(selected_set, value):
-                if not selected_set:  # nada selecionado = mostrar todos
-                    return True
-                return value in selected_set
-
-            vpcr_match = matches_multi(vpcr_sel, item.get("vpcr", ""))
-            sm_match = matches_multi(sm_sel, item.get("Sourcing Manager", ""))
-            status_multi_match = matches_multi(status_multi_sel, item.get("Status", ""))
-            supplier_match = matches_multi(supplier_sel, item.get("Supplier", ""))
-            requestor_match = matches_multi(requestor_sel, item.get("Requestor", ""))
-            continuity_match = matches_multi(continuity_sel, item.get("Continuity", ""))
+        # Se não há filtros aplicados E não estamos em modo de seleção, não mostrar nenhum card
+        if not self.has_any_filter_applied and not getattr(self, 'card_select_mode', False):
+            self.filtered_data = []
+        else:
+            # Salvar IDs com animações antes de filtrar para preservá-las
+            animated_before_filter = set(self.animated_icons.keys())
             
-            # Remover filtro de TODOs - todos os itens serão mostrados, mas ordenados por prioridade
-            if vpcr_match and sm_match and status_multi_match and supplier_match and requestor_match and continuity_match:
-                self.filtered_data.append(item)
+            self.filtered_data = []
+            for item in self.sample_data:
+                def matches_multi(selected_set, value):
+                    if not selected_set:  # nada selecionado = mostrar todos
+                        return True
+                    return value in selected_set
+
+                vpcr_match = matches_multi(vpcr_sel, item.get("vpcr", ""))
+                sm_match = matches_multi(sm_sel, item.get("Sourcing Manager", ""))
+                status_multi_match = matches_multi(status_multi_sel, item.get("Status", ""))
+                supplier_match = matches_multi(supplier_sel, item.get("Supplier", ""))
+                requestor_match = matches_multi(requestor_sel, item.get("Requestor", ""))
+                continuity_match = matches_multi(continuity_sel, item.get("Continuity", ""))
+                
+                # Remover filtro de TODOs - todos os itens serão mostrados, mas ordenados por prioridade
+                if vpcr_match and sm_match and status_multi_match and supplier_match and requestor_match and continuity_match:
+                    self.filtered_data.append(item)
         
         # Remover ordenação automática por TODOs - agora mantém ordem original
         
@@ -2697,6 +2875,19 @@ class VPCRApp:
             )
         ]
         
+        # Verificar se é um item novo e adicionar ícone
+        is_new_data = item.get("new_data", False)
+        if is_new_data:
+            first_row_controls.append(
+                ft.Container(
+                    content=ft.Icon(ft.Icons.FIBER_NEW, size=20, color=ft.Colors.WHITE),
+                    bgcolor=ft.Colors.GREEN,
+                    padding=ft.padding.all(4),
+                    border_radius=15,
+                    tooltip="Novo item importado"
+                )
+            )
+        
         if "Status" in self.visible_fields:
             first_row_controls.append(
                 ft.Container(
@@ -2749,13 +2940,13 @@ class VPCRApp:
         item_vpcr = item.get("vpcr", item.get("ID", ""))
         is_recently_updated = item_vpcr in self.recently_updated_items if hasattr(self, 'recently_updated_items') else False
         
-        # Definir cor do ícone baseado no status
-        if is_recently_updated:
-            notification_color = ft.Colors.GREEN  # Verde para itens recentemente atualizados
-        elif has_incomplete:
-            notification_color = ft.Colors.ORANGE  # Laranja para itens com TODOs pendentes
+        # Definir cor e visibilidade do ícone baseado no status
+        if has_incomplete:
+            notification_color = ft.Colors.YELLOW  # Amarelo para itens com TODOs pendentes
+            show_notification = True
         else:
-            notification_color = colors["accent"]  # Cor padrão do tema
+            notification_color = colors["accent"]  # Cor padrão (não será usada)
+            show_notification = False
 
         # Botão de salvar (fica à esquerda do sino). Cor muda se item estiver "sujo".
         is_dirty = item_id in self.dirty_items
@@ -2774,11 +2965,12 @@ class VPCRApp:
         # Guardar referência para atualizações futuras de cor
         self.card_save_buttons[item_id] = save_button
 
-        # Ícone de notificação (agora apenas mostra status, não abre diálogo)
+        # Ícone de notificação (só aparece quando há TODOs)
         notification_button = ft.Icon(
             ft.Icons.NOTIFICATIONS,
             size=24,
-            color=notification_color
+            color=notification_color,
+            visible=show_notification
         )
 
         # Seta de expansão (posicionada abaixo do sino)
@@ -2848,8 +3040,12 @@ class VPCRApp:
         if getattr(self, 'card_select_mode', False):
             checked = item_id in self.card_selection
             checkbox = ft.Checkbox(value=checked, on_change=lambda e, iid=item_id: self._handle_card_checkbox_change(e, iid))
-            # Colocar checkbox e conteúdo em uma linha para manter layout
-            content = ft.Row([checkbox, ft.Container(width=8), column], alignment=ft.MainAxisAlignment.START)
+            # Colocar checkbox e conteúdo em uma linha, mas limitar o conteúdo para não sair do card
+            content = ft.Row([
+                checkbox, 
+                ft.Container(width=8), 
+                ft.Container(content=column, expand=True)  # Container expansível para limitar o conteúdo
+            ], alignment=ft.MainAxisAlignment.START)
         else:
             content = column
 
@@ -2863,7 +3059,7 @@ class VPCRApp:
                     # Se já está selecionado, desselecionar
                     self.deselect_item()
                 else:
-                    # Se não está selecionado, selecionar
+                    # Se não está selecionado, selecionar (new_data será atualizado em select_item)
                     self.select_item(item)
             except Exception as ex:
                 print(f"Erro ao selecionar/desselecionar item: {ex}")
@@ -3007,128 +3203,52 @@ class VPCRApp:
             return None
     
     def update_card_list(self, preserve_scroll=False):
-        """Atualiza a lista de cards"""
-        if hasattr(self, 'card_list'):
-            # Guarda de reentrância: se já executando, marcar pendente e sair
-            if getattr(self, '_updating_card_list', False):
-                self._pending_card_list_update = True
-                return
-            self._updating_card_list = True
+        """Atualiza a lista de cards de forma otimizada"""
+        if not hasattr(self, 'card_list'):
+            return
             
-            try:
-                # Salvar posição do scroll se solicitado
-                scroll_position = None
-                if preserve_scroll and hasattr(self.card_list, 'scroll_to'):
-                    try:
-                        scroll_position = getattr(self.card_list, 'scroll_offset', None)
-                    except:
-                        pass
-                
-                # Salvar animações ativas antes de limpar os cards
-                active_animations = {item_id: True for item_id in self.animated_icons.keys()}
-
-                # Parar animações (não mexe em pending yet)
-                self.stop_all_animations()
-
-                # Preparar novos controles sem chamar update se não estiver anexado
-                self.card_list.controls.clear()
-                self.pending_animated_buttons.clear()
-
-                # Lista regular para todos os itens (sem priorização)
-                regular_items = []
-                
-                # Inicializar estrutura se não existir
-                if not hasattr(self, 'recently_selected_items'):
-                    self.recently_selected_items = {}
-                
-                # Inicializar recently_updated_items se não existir
-                if not hasattr(self, 'recently_updated_items'):
-                    self.recently_updated_items = set()
-                
-                import time
-                current_time = time.time()
-                
-                # Fazer uma cópia dos dados filtrados para evitar mudanças durante iteração
-                filtered_data_copy = list(self.filtered_data)
-                
-                for item in filtered_data_copy:
-                    item_id = item.get("vpcr", item.get("ID", ""))
-                    
-                    # Limpar itens expirados da lista de recentemente selecionados
-                    if item_id in self.recently_selected_items:
-                        if current_time - self.recently_selected_items[item_id] > 30:  # 30 segundos
-                            del self.recently_selected_items[item_id]
-                    
-                    # Não priorizamos mais a ordem - todos os itens são regulares
-                    # Isso mantém a ordem original da lista filtrada
-                    regular_items.append(item)
-                
-                # Usar apenas a lista regular sem priorização
-                all_items = regular_items
-                
-                # Garantir que estamos tratando a mesma lista de dados
-                if len(all_items) != len(filtered_data_copy):
-                    print(f"Aviso: Inconsistência entre filtered_data ({len(filtered_data_copy)}) e all_items ({len(all_items)})")
-                    # Garantir que todos os itens foram processados corretamente
-                    processed_ids = {item.get("vpcr", item.get("ID", "")) for item in all_items}
-                    for item in filtered_data_copy:
-                        item_id = item.get("vpcr", item.get("ID", ""))
-                        if item_id not in processed_ids:
-                            regular_items.append(item)
-                            print(f"Adicionando item perdido: {item_id}")
-                    # Recalcular all_items
-                    all_items = regular_items
-                
-                # Limpar controles e adicionar novos cards
-                self.card_list.controls.clear()
-                for item in all_items:
-                    try:
-                        self.card_list.controls.append(self.create_card(item))
-                    except Exception as e:
-                        print(f"Erro ao criar card para item {item.get('ID', 'unknown')}: {e}")
-
-                # Verificar se ListView está anexada à página
-                attached = False
-                try:
-                    attached = getattr(self.card_list, 'page', None) is not None
-                except Exception:
-                    attached = False
-
-                if attached:
-                    try:
-                        self.card_list.update()
-                        self.start_pending_icon_animations()
-                        self._card_list_refresh_attempts = 0
-                    except Exception as e:
-                        if 'must be added to the page' in str(e).lower():
-                            self._schedule_card_list_refresh(preserve_scroll)
-                        else:
-                            print(f"Erro ao atualizar card_list: {e}")
-                else:
-                    self._schedule_card_list_refresh(preserve_scroll)
-                
-                # Restaurar posição do scroll se havia uma salva
-                if scroll_position is not None:
-                    try:
-                        self.card_list.scroll_to(offset=scroll_position)
-                    except Exception as e:
-                        print(f"Erro ao restaurar posição de scroll: {e}")
+        # Evitar reentrância
+        if getattr(self, '_updating_card_list', False):
+            self._pending_card_list_update = True
+            return
+        self._updating_card_list = True
+        
+        try:
+            # Limpar controles existentes
+            self.card_list.controls.clear()
             
-            except Exception as e:
-                print(f"Erro crítico em update_card_list: {e}")
-                import traceback
-                traceback.print_exc()
-                # Tentar reconstruir a lista em caso de erro
+            # Inicializar estruturas se necessário
+            if not hasattr(self, 'recently_updated_items'):
+                self.recently_updated_items = set()
+                
+            # Criar cards de forma otimizada
+            new_controls = []
+            for item in self.filtered_data[:100]:  # Limitar para performance
                 try:
-                    self.recreate_card_list()
-                except Exception:
-                    pass
-            finally:
-                # Libera reentrância e executa update pendente se houver
-                self._updating_card_list = False
-                if getattr(self, '_pending_card_list_update', False):
-                    self._pending_card_list_update = False
-                    self.update_card_list(preserve_scroll=True)
+                    card = self.create_card(item)
+                    new_controls.append(card)
+                except Exception as e:
+                    print(f"Erro ao criar card: {e}")
+                    continue
+            
+            # Adicionar em lote
+            self.card_list.controls.extend(new_controls)
+            
+            # Update único e específico
+            if hasattr(self.card_list, 'update'):
+                self.card_list.update()
+                
+        except Exception as e:
+            print(f"Erro ao atualizar cards: {e}")
+        finally:
+            self._updating_card_list = False
+            
+            # Verificar se há atualização pendente
+            if getattr(self, '_pending_card_list_update', False):
+                self._pending_card_list_update = False
+                # Agendar próxima atualização para evitar loop
+                import threading
+                threading.Timer(0.1, lambda: self.update_card_list(preserve_scroll)).start()
 
     def recreate_card_list(self):
         """Recria completamente a card_list em caso de erro crítico"""
@@ -3299,14 +3419,26 @@ class VPCRApp:
     def toggle_card_select_mode(self):
         """Ativa/desativa o modo de seleção de cards"""
         self.card_select_mode = not getattr(self, 'card_select_mode', False)
+        
         # Sempre limpar seleção ao entrar/sair do modo (garantir estado limpo)
         self.card_selection.clear()
+        
+        # Se entramos em modo de seleção, precisamos mostrar todos os cards
+        if self.card_select_mode:
+            # Forçar a aplicação dos dados mesmo sem filtros
+            self.filter_data()
+        
         # Atualizar footer visibilidade
         if hasattr(self, 'card_export_footer'):
             self.card_export_footer.visible = self.card_select_mode
         self._update_card_export_footer()
+        
         # Recriar a lista para exibir/ocultar checkboxes
         self.update_card_list()
+        
+        # Forçar atualização da página
+        if hasattr(self, 'page'):
+            self.page.update()
 
     def cancel_card_selection(self):
         """Cancela o modo de seleção e limpa seleção"""
@@ -3319,6 +3451,31 @@ class VPCRApp:
         # Forçar atualização da página para garantir que os checkboxes sejam recriados
         if hasattr(self, 'page'):
             self.page.update()
+
+    def select_all_cards(self):
+        """Seleciona todos os cards visíveis na lista atual"""
+        try:
+            if hasattr(self, 'filtered_data') and self.filtered_data:
+                # Obter todos os IDs dos cards visíveis atualmente
+                for item in self.filtered_data:
+                    item_id = item.get("ID")
+                    if item_id:
+                        self.card_selection.add(item_id)
+                
+                # Atualizar o footer com a nova contagem
+                self._update_card_export_footer()
+                
+                # Atualizar a lista para mostrar os checkboxes marcados
+                self.update_card_list(preserve_scroll=True)
+                
+                # Mostrar notificação de sucesso
+                count = len(self.card_selection)
+                self.notify(f"✅ {count} card{'s' if count != 1 else ''} selecionado{'s' if count != 1 else ''}", 
+                          kind="success", auto_hide=2000)
+                
+        except Exception as e:
+            print(f"Erro ao selecionar todos os cards: {e}")
+            self.notify("❌ Erro ao selecionar cards", kind="error", auto_hide=3000)
 
     def show_custom_notification(self, message, color=ft.Colors.BLUE_400, duration=3000):
         """Cria uma notificação personalizada usando banner no topo"""
@@ -3684,8 +3841,8 @@ class VPCRApp:
             # Card container com título
             card_elements = []
             
-            # Header do card
-            card_title = f"{item.get('Title', 'Untitled')}"
+            # Header do card - mostrar apenas ID no título vermelho
+            card_title = f"ID: {item.get('ID', 'N/A')}"
             
             # Título do card com background colorido
             title_table = Table([[card_title]], colWidths=[260*mm])
@@ -3724,16 +3881,16 @@ class VPCRApp:
             is_rejected_status = "reject" in current_status.lower()
             
             if is_rejected_status:
-                # Para status de rejeição, mostrar todos como não completos e adicionar status vermelho
+                # Para status de rejeição, mostrar todos como não completos
                 current_index = -1  # Nenhum status como completo
                 
-                # Adicionar linha de status rejeitado em vermelho
-                rejected_text = current_status.replace("Reject", "Rejected")
+                # Adicionar apenas ícone de rejected (sem pintar campo inteiro)
+                rejected_icon = "❌ REJECTED"
                 
-                reject_table = Table([[rejected_text]], colWidths=[260*mm])
+                reject_table = Table([[rejected_icon]], colWidths=[260*mm])
                 safe_apply_style(reject_table, [
-                    ('BACKGROUND', (0, 0), (-1, -1), colors.red),
-                    ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+                    ('TEXTCOLOR', (0, 0), (-1, -1), colors.red),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                     ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
@@ -3742,6 +3899,7 @@ class VPCRApp:
                     ('RIGHTPADDING', (0, 0), (-1, -1), 15),
                     ('TOPPADDING', (0, 0), (-1, -1), 6),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.lightgrey),
                 ], context_desc="reject_table")
                 card_elements.append(reject_table)
             else:
@@ -3812,8 +3970,7 @@ class VPCRApp:
             
             # Lista completa de todos os campos incluindo novos
             all_fields = [
-                ("Title", item.get("Title", "")),
-                ("ID", item.get("ID", "")),
+                ("VPCR Title", item.get("Title", "")),
                 ("Status", item.get("Status", "")),
                 ("Category", item.get("Category", "")),
                 ("Initiated Date", self.format_date_display(item.get("Initiated Date", ""))),
@@ -4416,6 +4573,7 @@ class VPCRApp:
         def apply_and_close(e):
             self.filter_selections[field_name] = {cb.label for cb in checkboxes if cb.value}
             self.update_filter_display(field_name)
+            self._update_filters_title()
             self.filter_data()
             self.hide_dropdown_panel()
 
@@ -4470,13 +4628,49 @@ class VPCRApp:
         self.dropdown_open_for = None
         self.page.update()
 
+    def toggle_filters_visibility(self, e=None):
+        """Alterna a visibilidade dos filtros"""
+        self.filters_expanded = not self.filters_expanded
+        
+        # Atualizar a interface
+        if hasattr(self, 'filters_container'):
+            self.filters_container.visible = self.filters_expanded
+            
+        # Atualizar o ícone do botão
+        if hasattr(self, 'filters_toggle_button'):
+            self.filters_toggle_button.icon = ft.Icons.EXPAND_LESS if self.filters_expanded else ft.Icons.EXPAND_MORE
+            self.filters_toggle_button.tooltip = "Recolher filtros" if self.filters_expanded else "Expandir filtros"
+            
+        # Atualizar texto do título com contador de filtros ativos
+        self._update_filters_title()
+            
+        # Forçar atualização
+        if hasattr(self, 'page'):
+            self.page.update()
+    
+    def _update_filters_title(self):
+        """Atualiza o título dos filtros com contador de filtros ativos"""
+        if hasattr(self, 'filters_title_text'):
+            active_count = sum(1 for selections in self.filter_selections.values() if selections)
+            if active_count > 0:
+                title = f"Filtros ({active_count} ativo{'s' if active_count != 1 else ''})"
+            else:
+                title = "Filtros"
+            self.filters_title_text.value = title
+
     def clear_all_filters(self, e=None):
         # limpar todas as seleções de todos os filtros
         for key in self.filter_selections.keys():
             self.filter_selections[key].clear()
             self.update_filter_display(key)
         
+        # Atualizar contador no título
+        self._update_filters_title()
+        
         # Removido reset do switch de TODOs - não existe mais
+        
+        # Deselecionar item atual e mostrar placeholder
+        self.deselect_item()
         
         self.filter_data()
 
@@ -4540,11 +4734,31 @@ class VPCRApp:
     def select_item(self, item):
         """Atualiza os campos detalhados com base no item selecionado"""
         try:
+            # Detectar se é a primeira seleção
+            is_first_selection = not hasattr(self, 'selected_item') or self.selected_item is None
+            
             self.selected_item = item
             self.selected_item_id = item.get("ID")
             
             # Usar ID consistente
             item_id = item.get("ID")
+            
+            if is_first_selection:
+                print(f"PRIMEIRA SELEÇÃO detectada para item: {item_id}")
+            
+            # Sempre definir new_data como 0 ao selecionar o card (independentemente do valor atual)
+            try:
+                with self.db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE vpcr SET new_data = 0 WHERE vpcr = ?", 
+                        (item_id,)
+                    )
+                    conn.commit()
+                    print(f"Campo new_data definido como 0 no DB para item: {item_id}")
+                    # NÃO atualizar o item local nem recarregar dados - ícone permanece até próximo carregamento
+            except Exception as ex:
+                print(f"Erro ao atualizar new_data: {ex}")
             
             # Inicializar estruturas necessárias se não existirem
             if not hasattr(self, 'recently_updated_items'):
@@ -4608,15 +4822,14 @@ class VPCRApp:
             except Exception as e:
                 print(f"Erro ao carregar logs do VPCR {item_id}: {e}")
             
-            # Atualizar a aparência do card selecionado
+            # Atualizar apenas a aparência (sem recriar)
             try:
                 self.update_card_selection_only()
             except Exception as e:
-                print(f"Erro ao atualizar seleção de cards: {e}")
+                print(f"Erro ao atualizar seleção: {e}")
                 
-            # Se um ícone NEW foi removido, simplesmente atualizar a lista sem mudar posição
+            # Só atualizar lista se necessário
             if icon_removed:
-                # Atualizar a lista de cards para refletir a mudança no ícone
                 self.update_card_list(preserve_scroll=True)
         
         except Exception as e:
@@ -4629,9 +4842,32 @@ class VPCRApp:
             if hasattr(self, 'right_panel') and hasattr(self, 'detail_main_content'):
                 if self.right_panel.content is not self.detail_main_content:
                     self.right_panel.content = self.detail_main_content
-                    self.right_panel.update()
-        except Exception:
-            pass
+                
+                # Para primeira seleção, forçar múltiplas atualizações
+                if is_first_selection:
+                    print("Aplicando atualização especial para primeira seleção")
+                    if hasattr(self, 'page') and self.page:
+                        # Primeira atualização
+                        self.right_panel.update()
+                        self.page.update()
+                        
+                        # Aguardar um pouco e atualizar novamente
+                        import time
+                        time.sleep(0.05)
+                        
+                        # Segunda atualização forçada
+                        self.update_detail_containers()
+                        self.right_panel.update()
+                        self.page.update()
+                        print("Primeira seleção - atualizações múltiplas concluídas")
+                else:
+                    # Atualização normal para seleções subsequentes
+                    if hasattr(self, 'page') and self.page:
+                        self.right_panel.update()
+                        self.page.update()
+                        
+        except Exception as ex:
+            print(f"Erro ao atualizar painel direito: {ex}")
 
     def deselect_item(self):
         """Deseleciona o item atual e mostra o placeholder"""
@@ -4722,27 +4958,43 @@ class VPCRApp:
             print(f"Erro ao limpar TextFields: {e}")
 
     def update_detail_containers(self):
-        """Atualiza os containers de detalhes após seleção de item"""
+        """Atualiza os containers de detalhes de forma otimizada"""
         try:
-            if hasattr(self, 'detail_overview') and hasattr(self, 'detail_request') and hasattr(self, 'detail_doc') and hasattr(self, 'detail_log'):
-                # Atualizar overview
-                self.update_overview_container()
-                self.update_request_container()
-                self.update_doc_container()
-                self.update_l2_containers()
-                # Atualizar linha de status baseada no item selecionado
-                self.update_status_line()
+            print(f"Atualizando containers de detalhes para item: {self.selected_item_id if hasattr(self, 'selected_item_id') else 'None'}")
+            
+            # Verificar se todos os containers necessários existem
+            required_attrs = ['detail_overview', 'detail_request', 'detail_doc', 'detail_log']
+            missing_attrs = [attr for attr in required_attrs if not hasattr(self, attr)]
+            
+            if missing_attrs:
+                print(f"Containers ausentes: {missing_attrs}")
+                return
                 
-                # Verificar se a página está disponível antes de atualizar
-                if hasattr(self, 'page') and self.page:
-                    self.page.update()
+            # Atualizar em lote sem page.update individuais
+            print("Atualizando overview container...")
+            self.update_overview_container()
+            print("Atualizando request container...")
+            self.update_request_container() 
+            print("Atualizando doc container...")
+            self.update_doc_container()
+            print("Atualizando l2 containers...")
+            self.update_l2_containers()
+            print("Atualizando status line...")
+            self.update_status_line()
+            
+            # Update único no final (mais eficiente)
+            if hasattr(self, 'right_panel') and self.right_panel:
+                print("Atualizando painel direito...")
+                self.right_panel.update()
+            else:
+                print("Painel direito não encontrado")
+                
+            print("Containers de detalhes atualizados com sucesso")
+                
         except Exception as e:
-            # Em caso de erro, tentar atualizar apenas os componentes individuais
-            try:
-                if hasattr(self, 'right_panel') and self.right_panel:
-                    self.right_panel.update()
-            except Exception:
-                pass
+            print(f"Erro ao atualizar containers: {e}")
+            import traceback
+            traceback.print_exc()
 
     def update_status_line(self):
         """Atualiza a linha de status baseada no item selecionado"""
@@ -4768,29 +5020,54 @@ class VPCRApp:
         colors = self.theme_manager.get_theme_colors()
         # Atualizar valores dos TextFields persistentes (criados no create_vpcr_tab)
         try:
+            print(f"Atualizando overview - Title: {self.detail_fields.get('Title', 'N/A')}")
+            
             # Atualizar o título VPCR com o número do VPCR selecionado
             if hasattr(self, 'vpcr_title_text') and self.vpcr_title_text:
                 vpcr_number = self.selected_item.get("vpcr", "N/A") if hasattr(self, 'selected_item') and self.selected_item else "N/A"
                 self.vpcr_title_text.value = vpcr_number
                 self.vpcr_title_text.update()
+                print(f"VPCR number atualizado: {vpcr_number}")
             
-            self.tf_title.value = self.detail_fields.get("Title", "")
-            self.tf_title.update()
+            # Verificar se os TextFields existem antes de atualizar
+            if hasattr(self, 'tf_title') and self.tf_title:
+                title_value = self.detail_fields.get("Title", "")
+                self.tf_title.value = title_value
+                self.tf_title.update()
+                print(f"tf_title atualizado: {title_value}")
+                
+                # Forçar uma segunda atualização se a primeira não funcionou
+                if hasattr(self, 'page') and self.page:
+                    import time
+                    time.sleep(0.01)  # Pequena pausa
+                    self.tf_title.value = title_value
+                    self.tf_title.update()
+                    print(f"tf_title segunda atualização: {title_value}")
+            else:
+                print("tf_title não existe")
+                
             # Campos de data: formatar apenas para exibição, manter valor original internamente
-            self.tf_initiated.value = self.format_date_display(self.detail_fields.get("Initiated Date", ""))
-            self.tf_initiated.update()
-            self.tf_last_update.value = self.format_date_display(self.detail_fields.get("Last Update", ""))
-            self.tf_last_update.update()
-            self.tf_closed_date.value = self.format_date_display(self.detail_fields.get("Closed Date", ""))
-            self.tf_closed_date.update()
-            self.tf_category.value = self.detail_fields.get("Category", "")
-            self.tf_category.update()
-            self.tf_supplier.value = self.detail_fields.get("Supplier", "")
-            self.tf_supplier.update()
-            self.tf_pns.value = self.detail_fields.get("PNs", "")
-            self.tf_pns.update()
-            self.tf_plants.value = self.detail_fields.get("Plants Affected", "")
-            self.tf_plants.update()
+            if hasattr(self, 'tf_initiated') and self.tf_initiated:
+                self.tf_initiated.value = self.format_date_display(self.detail_fields.get("Initiated Date", ""))
+                self.tf_initiated.update()
+            if hasattr(self, 'tf_last_update') and self.tf_last_update:
+                self.tf_last_update.value = self.format_date_display(self.detail_fields.get("Last Update", ""))
+                self.tf_last_update.update()
+            if hasattr(self, 'tf_closed_date') and self.tf_closed_date:
+                self.tf_closed_date.value = self.format_date_display(self.detail_fields.get("Closed Date", ""))
+                self.tf_closed_date.update()
+            if hasattr(self, 'tf_category') and self.tf_category:
+                self.tf_category.value = self.detail_fields.get("Category", "")
+                self.tf_category.update()
+            if hasattr(self, 'tf_supplier') and self.tf_supplier:
+                self.tf_supplier.value = self.detail_fields.get("Supplier", "")
+                self.tf_supplier.update()
+            if hasattr(self, 'tf_pns') and self.tf_pns:
+                self.tf_pns.value = self.detail_fields.get("PNs", "")
+                self.tf_pns.update()
+            if hasattr(self, 'tf_plants') and self.tf_plants:
+                self.tf_plants.value = self.detail_fields.get("Plants Affected", "")
+                self.tf_plants.update()
             self.tf_link.value = self.detail_fields.get("Link", "")
             self.tf_link.update()
             self.tf_comments.value = self.detail_fields.get("Comments", "")
@@ -4898,17 +5175,56 @@ class VPCRApp:
                             pass
 
     def _auto_save_on_blur(self, field_name: str, value: str):
-        """Chamada quando um campo perde o foco - executa auto-save se habilitado."""
-        # Atualizar o valor primeiro
+        """Auto-save otimizado - só salva se houve mudança real"""
+        # Verificar se o valor mudou
+        current_value = self.detail_fields.get(field_name, "")
+        if current_value == value:
+            return  # Não fazer nada se não mudou
+            
+        # Atualizar valor
         self.detail_fields[field_name] = value
         
-        # Auto-save: salvar quando terminar a edição (perder foco)
-        if self.theme_manager.auto_save_enabled:
+        # Auto-save com debounce para evitar saves excessivos
+        if self.theme_manager.auto_save_enabled and hasattr(self, 'selected_item') and self.selected_item:
+            # Cancelar save anterior se ainda não executou
+            if hasattr(self, '_auto_save_timer'):
+                self._auto_save_timer.cancel()
+            
+            # Agendar save com delay
+            import threading
+            self._auto_save_timer = threading.Timer(0.5, self._execute_auto_save)
+            self._auto_save_timer.start()
+    
+    def _execute_auto_save(self):
+        """Executa o auto-save de forma segura"""
+        try:
             if hasattr(self, 'selected_item') and self.selected_item:
-                try:
-                    self.save_card_changes(self.selected_item, show_notification=False)
-                except Exception as e:
-                    print(f"Erro no auto-save: {e}")
+                self.save_card_changes(self.selected_item, show_notification=False)
+        except Exception as e:
+            print(f"Erro no auto-save: {e}")
+    
+    def batch_update(self, *components, delay=0.1):
+        """Agenda updates em lote para evitar travamentos"""
+        import threading
+        
+        if hasattr(self, '_update_timer') and self._update_timer:
+            self._update_timer.cancel()
+        
+        # Adicionar componentes à fila
+        for comp in components:
+            self._update_queue.add(comp)
+        
+        def execute_updates():
+            try:
+                for comp in self._update_queue:
+                    if hasattr(comp, 'update'):
+                        comp.update()
+                self._update_queue.clear()
+            except Exception as e:
+                print(f"Erro em batch_update: {e}")
+        
+        self._update_timer = threading.Timer(delay, execute_updates)
+        self._update_timer.start()
 
     def format_date_display(self, date_str):
         """Converte data para dd/mm/aaaa apenas para exibição"""
@@ -5345,16 +5661,47 @@ class VPCRApp:
             expand=True
         )
         
+        # Botão para expandir/recolher filtros
+        self.filters_toggle_button = ft.IconButton(
+            icon=ft.Icons.EXPAND_MORE,
+            tooltip="Expandir filtros",
+            on_click=self.toggle_filters_visibility
+        )
+        
+        # Texto do título dos filtros
+        self.filters_title_text = ft.Text(
+            "Filtros",
+            size=18,
+            weight=ft.FontWeight.BOLD,
+            color=colors["text_container_primary"]
+        )
+        
+        # Container dos filtros organizados em 2 colunas
+        self.filters_container = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    self.filter_vpcr_chips,
+                    self.filter_sourcing_manager_chips
+                ], spacing=8),
+                ft.Row([
+                    self.filter_status_chips,
+                    self.filter_supplier_chips
+                ], spacing=8),
+                ft.Row([
+                    self.filter_requestor_chips,
+                    self.filter_continuity_chips
+                ], spacing=8)
+            ], spacing=8),
+            visible=self.filters_expanded
+        )
+        
         # Cabeçalho com filtros dentro de um Stack para overlay suspenso
         header_content = ft.Column([
             ft.Row([
-                ft.Text(
-                    "Filtros",
-                    size=18,
-                    weight=ft.FontWeight.BOLD,
-                    color=colors["text_container_primary"],
-                    expand=True
-                ),
+                ft.Row([
+                    self.filters_toggle_button,
+                    self.filters_title_text
+                ], spacing=8),
                 # Agrupar os botões no canto: importar + limpar
                 ft.Row([
                     ft.IconButton(
@@ -5367,16 +5714,8 @@ class VPCRApp:
                     ft.IconButton(icon=ft.Icons.FILE_PRESENT, tooltip="Selecionar cards para exportar", on_click=lambda e: self.toggle_card_select_mode())
                 ], spacing=6)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Column([
-                ft.Row([
-                    self.filter_vpcr_chips,
-                    self.filter_sourcing_manager_chips,
-                    self.filter_status_chips,
-                    self.filter_supplier_chips,
-                    self.filter_requestor_chips,
-                    self.filter_continuity_chips
-                ], spacing=8, wrap=False, scroll=ft.ScrollMode.AUTO)
-            ], spacing=8)
+            # Container dos filtros (inicialmente oculto)
+            self.filters_container
         ], spacing=10)
 
         header_container = ft.Container(
@@ -5398,12 +5737,20 @@ class VPCRApp:
         # Criar os controles de footer fora da expressão do Column para evitar erros de sintaxe
         self.card_export_count_text = ft.Text("", size=14, weight=ft.FontWeight.BOLD)
         self.card_export_footer = ft.Container(
-            content=ft.Row([
-                self.card_export_count_text,
-                ft.Container(expand=True),
-                ft.TextButton("Cancelar", on_click=lambda e: self.cancel_card_selection()),
-                ft.ElevatedButton("Exportar", on_click=lambda e: self.export_selected_cards())
-            ], alignment=ft.MainAxisAlignment.CENTER),
+            content=ft.Column([
+                # Primeira linha: contador
+                ft.Row([
+                    self.card_export_count_text
+                ], alignment=ft.MainAxisAlignment.CENTER),
+                # Segunda linha: botões
+                ft.Row([
+                    ft.TextButton("Selecionar Todos", on_click=lambda e: self.select_all_cards()),
+                    ft.Container(expand=True),
+                    ft.TextButton("Cancelar", on_click=lambda e: self.cancel_card_selection()),
+                    ft.Container(width=8),
+                    ft.ElevatedButton("Exportar", on_click=lambda e: self.export_selected_cards())
+                ], alignment=ft.MainAxisAlignment.CENTER)
+            ], spacing=5, tight=True),
             bgcolor=colors["secondary"],
             padding=10,
             border_radius=8,
@@ -5431,7 +5778,7 @@ class VPCRApp:
         self.tf_title = ft.TextField(
             value=self.detail_fields.get("Title", ""),
             label="Title",
-            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]),
             bgcolor=colors["field_bg"],
             border_color=colors["field_border"],
             expand=True,
@@ -5645,7 +5992,7 @@ class VPCRApp:
                 ft.Column(request_col2, spacing=20, expand=True)
             ], spacing=12),
             bgcolor=colors["secondary"],
-            padding=12,
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
             border_radius=8,
             expand=True,
             height=120  # Altura reduzida para layout com 2 colunas
@@ -5718,7 +6065,7 @@ class VPCRApp:
                 ], spacing=12)
             ], expand=True, scroll=ft.ScrollMode.ADAPTIVE),
             bgcolor=colors["secondary"],
-            padding=12,
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
             border_radius=8,
             expand=True
         )
@@ -5728,7 +6075,7 @@ class VPCRApp:
         # Criar texto do título VPCR como atributo da classe para poder atualizá-lo
         self.vpcr_title_text = ft.Text(
             self.selected_item.get("vpcr", "N/A") if hasattr(self, 'selected_item') and self.selected_item else "N/A", 
-            size=18, 
+            size=self.theme_manager.font_size, 
             weight=ft.FontWeight.BOLD, 
             color=colors["text_container_primary"]
         )
@@ -5781,14 +6128,14 @@ class VPCRApp:
                                 ft.Text("Request & Responsibility", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
                                 self.detail_request
                             ], spacing=6),
-                            padding=ft.padding.all(10)
+                            padding=ft.padding.symmetric(horizontal=10, vertical=5)
                         ),
                         ft.Container(
                             content=ft.Column([
                                 ft.Text("Documentation", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
                                 self.detail_doc
                             ], spacing=6),
-                            padding=ft.padding.all(10)
+                            padding=ft.padding.symmetric(horizontal=10, vertical=5)
                         ),
                         ft.Container(
                             content=ft.Column([
