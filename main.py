@@ -2056,6 +2056,7 @@ class VPCRApp:
             "Status",
             "Sourcing Manager",
             "Supplier",
+            "Proposed Supplier",
             "Requestor",
             "Continuity",
         ]
@@ -2066,7 +2067,7 @@ class VPCRApp:
         self.filtered_data = []
         self.has_any_filter_applied = False
         # Campos visíveis nos cards (configurável nas Settings)
-        self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
+        self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier", "Proposed Supplier"]
         # Carregar configuração persistida de campos visíveis (se existir)
         self.load_visible_fields()
         # Estado para seleção/exportação de cards
@@ -2096,6 +2097,7 @@ class VPCRApp:
             "Closed Date": "",
             "Category": "", 
             "Supplier": "",
+            "Proposed Supplier": "",
             "PNs": "",
             "Plants Affected": "",
             # Request & Responsibility
@@ -2926,7 +2928,7 @@ class VPCRApp:
                     self.visible_fields = [h for h in self.db_headers if h in loaded and h != 'ID']
                     # Garantir fallback mínimo
                     if not self.visible_fields:
-                        self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier"]
+                        self.visible_fields = ["Title", "Description", "Status", "Sourcing Manager", "Supplier", "Proposed Supplier"]
         except Exception:
             pass
     
@@ -3202,6 +3204,43 @@ class VPCRApp:
         for f in self.visible_fields:
             if f in ("Title", "Status"):
                 continue
+            
+            # Tratamento especial para Supplier - mostrar junto com Proposed Supplier
+            if f == "Supplier":
+                current_supplier = item.get("Supplier", "")
+                proposed_supplier = item.get("Proposed Supplier", "")
+                
+                if current_supplier or proposed_supplier:
+                    supplier_row_controls = [
+                        ft.Text("Supplier:", size=base_font, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
+                    ]
+                    
+                    # Current Supplier
+                    if current_supplier:
+                        supplier_row_controls.append(
+                            ft.Text(current_supplier, size=base_font, color=colors["text_container_secondary"])
+                        )
+                    else:
+                        supplier_row_controls.append(
+                            ft.Text("N/A", size=base_font, color=colors["text_container_secondary"], italic=True)
+                        )
+                    
+                    # Seta indicando mudança (apenas se houver proposed supplier)
+                    if proposed_supplier:
+                        supplier_row_controls.append(
+                            ft.Icon(ft.Icons.ARROW_FORWARD, size=16, color=colors["accent"])
+                        )
+                        supplier_row_controls.append(
+                            ft.Text(proposed_supplier, size=base_font, color=colors["accent"], weight=ft.FontWeight.BOLD)
+                        )
+                    
+                    rows.append(ft.Row(supplier_row_controls, spacing=8, alignment=ft.MainAxisAlignment.START))
+                continue
+            
+            # Pular Proposed Supplier quando processar individualmente, já foi tratado junto com Supplier
+            if f == "Proposed Supplier":
+                continue
+            
             val = item.get(f, "")
             if val != "":
                 # Para campos que contém listas separadas por ;, formatá-las como lista
@@ -5140,6 +5179,7 @@ class VPCRApp:
                 "Closed Date": item.get("Closed Date", ""),
                 "Category": item.get("Category", "N/A"),
                 "Supplier": item.get("Supplier", ""),
+                "Proposed Supplier": item.get("Proposed Supplier", ""),
                 "PNs": self._format_semicolon_separated_field(item.get("PNs", "N/A")),
                 "Plants Affected": self._format_semicolon_separated_field(item.get("Plants Affected", "N/A")),
                 # Request & Responsibility  
@@ -5286,7 +5326,7 @@ class VPCRApp:
             text_fields = [
                 # Overview fields
                 'tf_title', 'tf_initiated', 'tf_last_update', 'tf_closed_date', 
-                'tf_category', 'tf_supplier', 'tf_pns', 'tf_plants', 'tf_link', 'tf_comments',
+                'tf_category', 'tf_supplier', 'tf_proposed_supplier', 'tf_pns', 'tf_plants', 'tf_link', 'tf_comments',
                 # Request fields
                 'tf_requestor', 'tf_sourcing', 'tf_sqie', 'tf_continuity'
             ]
@@ -5387,6 +5427,7 @@ class VPCRApp:
             if hasattr(self, 'vpcr_title_text') and self.vpcr_title_text:
                 vpcr_number = self.selected_item.get("vpcr", "N/A") if hasattr(self, 'selected_item') and self.selected_item else "N/A"
                 self.vpcr_title_text.value = vpcr_number
+                self.vpcr_title_text.size = self.theme_manager.font_size
                 self.vpcr_title_text.update()
                 print(f"VPCR number atualizado: {vpcr_number}")
             
@@ -5394,6 +5435,7 @@ class VPCRApp:
             if hasattr(self, 'tf_title') and self.tf_title:
                 title_value = self.detail_fields.get("Title", "")
                 self.tf_title.value = title_value
+                self.tf_title.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_title.update()
                 print(f"tf_title atualizado: {title_value}")
                 
@@ -5402,6 +5444,7 @@ class VPCRApp:
                     import time
                     time.sleep(0.01)  # Pequena pausa
                     self.tf_title.value = title_value
+                    self.tf_title.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                     self.tf_title.update()
                     print(f"tf_title segunda atualização: {title_value}")
             else:
@@ -5410,28 +5453,41 @@ class VPCRApp:
             # Campos de data: formatar apenas para exibição, manter valor original internamente
             if hasattr(self, 'tf_initiated') and self.tf_initiated:
                 self.tf_initiated.value = self.format_date_display(self.detail_fields.get("Initiated Date", ""))
+                self.tf_initiated.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_initiated.update()
             if hasattr(self, 'tf_last_update') and self.tf_last_update:
                 self.tf_last_update.value = self.format_date_display(self.detail_fields.get("Last Update", ""))
+                self.tf_last_update.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_last_update.update()
             if hasattr(self, 'tf_closed_date') and self.tf_closed_date:
                 self.tf_closed_date.value = self.format_date_display(self.detail_fields.get("Closed Date", ""))
+                self.tf_closed_date.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_closed_date.update()
             if hasattr(self, 'tf_category') and self.tf_category:
                 self.tf_category.value = self.detail_fields.get("Category", "")
+                self.tf_category.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_category.update()
             if hasattr(self, 'tf_supplier') and self.tf_supplier:
                 self.tf_supplier.value = self.detail_fields.get("Supplier", "")
+                self.tf_supplier.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_supplier.update()
+            if hasattr(self, 'tf_proposed_supplier') and self.tf_proposed_supplier:
+                self.tf_proposed_supplier.value = self.detail_fields.get("Proposed Supplier", "")
+                self.tf_proposed_supplier.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
+                self.tf_proposed_supplier.update()
             if hasattr(self, 'tf_pns') and self.tf_pns:
                 self.tf_pns.value = self.detail_fields.get("PNs", "")
+                self.tf_pns.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_pns.update()
             if hasattr(self, 'tf_plants') and self.tf_plants:
                 self.tf_plants.value = self.detail_fields.get("Plants Affected", "")
+                self.tf_plants.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                 self.tf_plants.update()
             self.tf_link.value = self.detail_fields.get("Link", "")
+            self.tf_link.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
             self.tf_link.update()
             self.tf_comments.value = self.detail_fields.get("Comments", "")
+            self.tf_comments.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
             self.tf_comments.update()
         except Exception:
             # Se algum campo não existir (inicialização), ignorar
@@ -5443,12 +5499,16 @@ class VPCRApp:
         # Atualizar TextFields persistentes se existirem
         try:
             self.tf_requestor.value = self.detail_fields.get("Requestor", "")
+            self.tf_requestor.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
             self.tf_requestor.update()
             self.tf_sourcing.value = self.detail_fields.get("Sourcing", "")
+            self.tf_sourcing.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
             self.tf_sourcing.update()
             self.tf_sqie.value = self.detail_fields.get("SQIE", "")
+            self.tf_sqie.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
             self.tf_sqie.update()
             self.tf_continuity.value = self.detail_fields.get("Continuity", "")
+            self.tf_continuity.text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
             self.tf_continuity.update()
         except Exception:
             pass
@@ -5493,6 +5553,7 @@ class VPCRApp:
             for name, _ in group1_fields + group2_fields + group3_fields + group4_fields:
                 if hasattr(self, 'tf_doc') and name in self.tf_doc:
                     self.tf_doc[name].value = self.detail_fields.get(name, "")
+                    self.tf_doc[name].text_style = ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"])
                     self.tf_doc[name].update()
         except Exception:
             pass
@@ -6247,12 +6308,23 @@ class VPCRApp:
         
         self.tf_supplier = ft.TextField(
             value=self.detail_fields.get("Supplier", ""), 
-            label="Supplier", 
+            label="Current Supplier", 
             text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"],
             height=40,
             expand=True,  # Garante que se adapte horizontalmente
+            read_only=True
+        )
+        
+        self.tf_proposed_supplier = ft.TextField(
+            value=self.detail_fields.get("Proposed Supplier", ""), 
+            label="Proposed Supplier", 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
+            bgcolor=colors["field_bg"], 
+            border_color=colors["field_border"],
+            height=40,
+            expand=True,
             read_only=True
         )
         
@@ -6284,7 +6356,7 @@ class VPCRApp:
         self.tf_link = ft.TextField(
             value=self.detail_fields.get("Link", ""),
             label="Link",
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]),
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]),
             bgcolor=colors["field_bg"],
             border_color=colors["field_border"],
             height=40,
@@ -6325,9 +6397,17 @@ class VPCRApp:
             ft.Container(
                 content=ft.Row([self.tf_closed_date, self.tf_category], spacing=8)
             ),
-            # Fornecedor - altura fixa
+            # Fornecedor - altura fixa com seta para proposto
             ft.Container(
-                content=self.tf_supplier
+                content=ft.Row([
+                    self.tf_supplier,
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.ARROW_FORWARD, size=20, color=colors["accent"]),
+                        width=30,
+                        alignment=ft.alignment.center
+                    ),
+                    self.tf_proposed_supplier
+                ], spacing=8)
             ),
             # PNs e Plantas - expansíveis (sem altura fixa)
             ft.Container(
@@ -6376,7 +6456,7 @@ class VPCRApp:
         self.tf_sqie = ft.TextField(
             value=self.detail_fields.get("SQIE", ""), 
             label="SQIE", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
@@ -6387,7 +6467,7 @@ class VPCRApp:
         self.tf_continuity = ft.TextField(
             value=self.detail_fields.get("Continuity", ""), 
             label="Continuity", 
-            text_style=ft.TextStyle(size=12, color=colors["field_text"]), 
+            text_style=ft.TextStyle(size=self.theme_manager.font_size, color=colors["field_text"]), 
             bgcolor=colors["field_bg"], 
             border_color=colors["field_border"], 
             expand=True, 
@@ -6840,21 +6920,39 @@ class VPCRApp:
         
         return time_metrics
     
-    def create_time_analysis_card(self, time_analysis):
+    def create_time_analysis_card(self, time_analysis, card_height=340):
         """Cria o card de análise de tempo entre abertura e fechamento"""
         colors = self.theme_manager.get_theme_colors()
-        
+
+        header_row = ft.Row([
+            ft.Icon(ft.Icons.SCHEDULE, size=24, color=colors["accent"]),
+            ft.Text("Tempo Médio de Resolução", size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
+        ], alignment=ft.MainAxisAlignment.START)
+
         if time_analysis["total_with_dates"] == 0:
+            body_content = ft.Column([
+                ft.Divider(height=1, color=colors["border"], thickness=1),
+                ft.Text(
+                    "Nenhum VPCR com ambas as datas disponível",
+                    color=colors["text_container_secondary"],
+                    size=12,
+                    text_align=ft.TextAlign.CENTER
+                )
+            ], spacing=12)
+
             return ft.Container(
+                col={"xs": 12, "md": 6},
                 content=ft.Container(
+                    height=card_height,
                     content=ft.Column([
-                        ft.Row([
-                            ft.Icon(ft.Icons.SCHEDULE, size=24, color=colors["accent"]),
-                            ft.Text("Tempo Médio de Resolução", size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
-                        ], alignment=ft.MainAxisAlignment.START),
-                        ft.Divider(height=1, color=colors["border"], thickness=1),
-                        ft.Text("Nenhum VPCR com ambas as datas disponível", color=colors["text_container_secondary"], size=12, text_align=ft.TextAlign.CENTER)
-                    ], spacing=12),
+                        header_row,
+                        ft.Container(
+                            content=body_content,
+                            expand=True,
+                            alignment=ft.alignment.center,
+                            padding=ft.padding.only(top=12)
+                        )
+                    ], spacing=12, expand=True),
                     padding=20,
                     bgcolor=colors["card_bg"],
                     border_radius=12,
@@ -6920,24 +7018,37 @@ class VPCRApp:
                 ], spacing=4)
             )
         
+        scrollable_content = ft.Column([
+            ft.Divider(height=1, color=colors["border"], thickness=1),
+            ft.Text(
+                f"Análise baseada em {total_with_dates} VPCRs com datas completas",
+                size=11,
+                color=colors["text_container_secondary"],
+                italic=True
+            ),
+            ft.Column(stats_items, spacing=8),
+            ft.Divider(height=1, color=colors["border"], thickness=1),
+            ft.Text("Média por Ano", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+            ft.Column(yearly_items, spacing=6) if yearly_items else ft.Text("Nenhum dado anual disponível", color=colors["text_container_secondary"], size=12),
+            ft.Divider(height=1, color=colors["border"], thickness=1),
+            ft.Text("Distribuição por Tempo", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+            ft.Column(distribution_items, spacing=8) if distribution_items else ft.Text("Sem distribuição disponível", color=colors["text_container_secondary"], size=12)
+        ], spacing=12, tight=True)
+
         return ft.Container(
+            col={"xs": 12, "md": 6},
             content=ft.Container(
+                height=card_height,
                 content=ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.SCHEDULE, size=24, color=colors["accent"]),
-                        ft.Text("Tempo Médio de Resolução", size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
-                    ], alignment=ft.MainAxisAlignment.START),
-                    ft.Divider(height=1, color=colors["border"], thickness=1),
-                    ft.Text(f"Análise baseada em {total_with_dates} VPCRs com datas completas", 
-                            size=11, color=colors["text_container_secondary"], italic=True),
-                    ft.Column(stats_items, spacing=8),
-                    ft.Divider(height=1, color=colors["border"], thickness=1),
-                    ft.Text("Média por Ano", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
-                    ft.Column(yearly_items, spacing=6) if yearly_items else ft.Text("Nenhum dado anual disponível", color=colors["text_container_secondary"], size=12),
-                    ft.Divider(height=1, color=colors["border"], thickness=1),
-                    ft.Text("Distribuição por Tempo", size=14, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
-                    ft.Column(distribution_items, spacing=8) if distribution_items else ft.Text("Sem distribuição disponível", color=colors["text_container_secondary"], size=12)
-                ], spacing=12),
+                    header_row,
+                    ft.Container(
+                        content=ft.Column([
+                            scrollable_content
+                        ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
+                        expand=True,
+                        padding=ft.padding.only(right=4)
+                    )
+                ], spacing=12, expand=True),
                 padding=20,
                 bgcolor=colors["card_bg"],
                 border_radius=12,
@@ -6948,6 +7059,8 @@ class VPCRApp:
     def create_indicators_tab(self):
         """Cria o conteúdo da aba Indicadores"""
         colors = self.theme_manager.get_theme_colors()
+        SUMMARY_CARD_HEIGHT = 170
+        DISTRIBUTION_CARD_HEIGHT = 340
         
         # Calcular indicadores
         indicators = self.calculate_indicators()
@@ -6981,6 +7094,7 @@ class VPCRApp:
             return ft.Container(
                 col={"xs": 12, "sm": 6, "md": 3},
                 content=ft.Container(
+                    height=SUMMARY_CARD_HEIGHT,
                     content=ft.Column([
                         ft.Row([
                             ft.Icon(icon_name, size=28, color=colors["accent"]),
@@ -6988,7 +7102,7 @@ class VPCRApp:
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                         ft.Text(str(value), size=28, weight=ft.FontWeight.W_700, color=colors["text_primary"]),
                         ft.Text(helper, size=12, color=colors["text_container_secondary"])
-                    ], spacing=8),
+                    ], spacing=8, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     padding=ft.padding.all(18),
                     bgcolor=colors["secondary"],
                     border_radius=12,
@@ -7030,20 +7144,47 @@ class VPCRApp:
                     ], spacing=6)
                 )
 
-            card_body = ft.Column(items, spacing=10) if items else ft.Text("Nenhum dado disponível", color=colors["text_container_secondary"])
+            if items:
+                body_column = ft.Column(
+                    items,
+                    spacing=10,
+                    tight=True,
+                    expand=True,
+                    scroll=ft.ScrollMode.AUTO
+                )
+            else:
+                body_column = ft.Column(
+                    [
+                        ft.Text(
+                            "Nenhum dado disponível",
+                            color=colors["text_container_secondary"],
+                            text_align=ft.TextAlign.CENTER
+                        )
+                    ],
+                    expand=True,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                )
+
+            card_body = ft.Container(
+                content=body_column,
+                expand=True,
+                padding=ft.padding.only(right=4)
+            )
 
             container_kwargs = {"col": col_span} if col_span else {}
 
             return ft.Container(
                 **container_kwargs,
                 content=ft.Container(
+                    height=DISTRIBUTION_CARD_HEIGHT,
                     content=ft.Column([
                         ft.Row([
                             ft.Icon(icon_name, size=24, color=colors["accent"]),
                             ft.Text(title, size=18, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
                         ], spacing=10),
                         card_body
-                    ], spacing=16),
+                    ], spacing=16, expand=True),
                     padding=ft.padding.all(18),
                     bgcolor=colors["secondary"],
                     border_radius=12,
@@ -7076,35 +7217,34 @@ class VPCRApp:
             ft.Icons.CATEGORY,
             indicators["type_counts"],
             indicators.get("type_percentages"),
-            col_span=None
+            col_span={"xs": 12, "md": 6}
         )
 
         continuity_card = distribution_card(
             "Continuity",
             ft.Icons.TIMELINE,
             indicators["continuity_counts"],
-            col_span=None
-        )
-
-        # Card de análise de tempo
-        time_analysis_card = self.create_time_analysis_card(indicators["time_analysis"])
-
-        type_with_continuity = ft.Container(
-            col={"xs": 12, "md": 6},
-            content=ft.Column([
-                type_card,
-                continuity_card,
-                time_analysis_card
-            ], spacing=16)
+            col_span={"xs": 12, "md": 6}
         )
 
         distribution_row_primary = ft.ResponsiveRow(
-            controls=[status_card, type_with_continuity],
+            controls=[status_card, type_card],
             spacing=16,
             run_spacing=16
         )
 
+        time_analysis_card = self.create_time_analysis_card(
+            indicators["time_analysis"],
+            card_height=DISTRIBUTION_CARD_HEIGHT
+        )
+
         distribution_row_secondary = ft.ResponsiveRow(
+            controls=[continuity_card, time_analysis_card],
+            spacing=16,
+            run_spacing=16
+        )
+
+        distribution_row_tertiary = ft.ResponsiveRow(
             controls=[
                 distribution_card(
                     "Top Suppliers",
@@ -7139,7 +7279,8 @@ class VPCRApp:
             ]),
             summary_row,
             distribution_row_primary,
-            distribution_row_secondary
+            distribution_row_secondary,
+            distribution_row_tertiary
         ], spacing=24, scroll=ft.ScrollMode.AUTO)
 
         return ft.Container(
