@@ -2493,6 +2493,7 @@ class VPCRApp:
         tabs_control = ft.Tabs(
             tabs=[
                 ft.Tab(text="VPCR", content=self.create_vpcr_tab()),
+                ft.Tab(text="Indicadores", content=self.create_indicators_tab()),
                 ft.Tab(text="Settings", content=self.create_settings_tab())
             ],
             selected_index=0,
@@ -6210,6 +6211,281 @@ class VPCRApp:
             self.page.update()
         self.file_import_manager.open_import_window()
         
+    def calculate_indicators(self):
+        """Calcula indicadores consolidados da tabela VPCR"""
+        total = len(self.sample_data or [])
+        indicators = {
+            "total_vpcrs": total,
+            "status_counts": {},
+            "supplier_counts": {},
+            "sourcing_manager_counts": {},
+            "type_counts": {},
+            "continuity_counts": {},
+            "distinct_suppliers": 0,
+            "distinct_sourcing_managers": 0,
+            "distinct_status": 0,
+            "distinct_types": 0,
+        }
+
+        if total == 0:
+            return indicators
+
+        supplier_set = set()
+        sourcing_manager_set = set()
+        status_set = set()
+        type_set = set()
+
+        for item in self.sample_data:
+            # Contagem por status
+            status = (item.get("Status") or "N/A").strip() or "N/A"
+            indicators["status_counts"][status] = indicators["status_counts"].get(status, 0) + 1
+            status_set.add(status)
+
+            # Contagem por supplier
+            supplier = (item.get("Supplier") or "").strip()
+            if supplier:
+                indicators["supplier_counts"][supplier] = indicators["supplier_counts"].get(supplier, 0) + 1
+                supplier_set.add(supplier)
+
+            # Contagem por sourcing manager
+            sourcing_manager = (item.get("Sourcing Manager") or "").strip()
+            if sourcing_manager:
+                indicators["sourcing_manager_counts"][sourcing_manager] = indicators["sourcing_manager_counts"].get(sourcing_manager, 0) + 1
+                sourcing_manager_set.add(sourcing_manager)
+
+            # Contagem por tipo de VPCR
+            vpcr_type = (item.get("Type of VPCR") or "").strip()
+            if vpcr_type:
+                indicators["type_counts"][vpcr_type] = indicators["type_counts"].get(vpcr_type, 0) + 1
+                type_set.add(vpcr_type)
+
+            # Contagem por continuity
+            continuity = (item.get("Continuity") or "").strip()
+            if continuity:
+                indicators["continuity_counts"][continuity] = indicators["continuity_counts"].get(continuity, 0) + 1
+
+        indicators["distinct_suppliers"] = len(supplier_set)
+        indicators["distinct_sourcing_managers"] = len(sourcing_manager_set)
+        indicators["distinct_status"] = len(status_set)
+        indicators["distinct_types"] = len(type_set)
+
+        def to_percentages(counts: Dict[str, int]) -> Dict[str, float]:
+            return {
+                key: (value / total) * 100
+                for key, value in counts.items()
+                if total > 0 and value > 0
+            }
+
+        indicators["status_percentages"] = to_percentages(indicators["status_counts"])
+        indicators["type_percentages"] = to_percentages(indicators["type_counts"])
+
+        # Top 5 listas para exibição compacta
+        def top_n(counts: Dict[str, int], n: int = 5) -> List[Tuple[str, int]]:
+            return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:n]
+
+        indicators["top_suppliers"] = top_n(indicators["supplier_counts"])
+        indicators["top_sourcing_managers"] = top_n(indicators["sourcing_manager_counts"])
+
+        return indicators
+    
+    def create_indicators_tab(self):
+        """Cria o conteúdo da aba Indicadores"""
+        colors = self.theme_manager.get_theme_colors()
+        
+        # Calcular indicadores
+        indicators = self.calculate_indicators()
+
+        total_vpcrs = indicators.get("total_vpcrs", 0)
+
+        if total_vpcrs == 0:
+            return ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.INSIGHTS, size=64, color=colors["text_container_secondary"]),
+                    ft.Text(
+                        "Nenhum dado disponível ainda",
+                        size=22,
+                        weight=ft.FontWeight.BOLD,
+                        color=colors["text_container_primary"],
+                        text_align=ft.TextAlign.CENTER
+                    ),
+                    ft.Text(
+                        "Importe a planilha VPCR para visualizar os indicadores de performance.",
+                        size=16,
+                        color=colors["text_container_secondary"],
+                        text_align=ft.TextAlign.CENTER
+                    )
+                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
+                padding=ft.padding.all(40),
+                expand=True
+            )
+        
+        # Helpers visuais
+        def summary_card(title: str, value: int, icon_name: str, helper: str) -> ft.Control:
+            return ft.Container(
+                col={"xs": 12, "sm": 6, "md": 3},
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(icon_name, size=28, color=colors["accent"]),
+                            ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        ft.Text(str(value), size=28, weight=ft.FontWeight.W_700, color=colors["text_primary"]),
+                        ft.Text(helper, size=12, color=colors["text_container_secondary"])
+                    ], spacing=8),
+                    padding=ft.padding.all(18),
+                    bgcolor=colors["secondary"],
+                    border_radius=12,
+                    border=ft.border.all(1, colors["border"])
+                )
+            )
+
+        def distribution_card(
+            title: str,
+            icon_name: str,
+            counts,
+            percentages: Dict[str, float] | None = None,
+            top_only: bool = False,
+            col_span: Dict[str, int] | None = None
+        ) -> ft.Control:
+            items = []
+            if isinstance(counts, list):
+                data_iterable = counts
+            else:
+                data_iterable = list(counts.items())
+
+            if top_only:
+                data_iterable = sorted(data_iterable, key=lambda item: item[1], reverse=True)[:5]
+            else:
+                data_iterable = sorted(data_iterable, key=lambda item: item[1], reverse=True)
+
+            for label, count in data_iterable:
+                if not label or label == "N/A":
+                    continue
+                percent = (percentages or {}).get(label, (count / total_vpcrs) * 100 if total_vpcrs else 0)
+                items.append(
+                    ft.Column([
+                        ft.Row([
+                            ft.Text(label, size=14, color=colors["text_container_primary"], expand=True),
+                            ft.Text(f"{count}", size=14, weight=ft.FontWeight.BOLD, color=colors["accent"]),
+                            ft.Text(f"{percent:.1f}%", size=12, color=colors["text_container_secondary"])
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        ft.ProgressBar(value=min(percent / 100, 1.0), height=6, color=colors["accent"], bgcolor=colors["card_bg"])
+                    ], spacing=6)
+                )
+
+            card_body = ft.Column(items, spacing=10) if items else ft.Text("Nenhum dado disponível", color=colors["text_container_secondary"])
+
+            container_kwargs = {"col": col_span} if col_span else {}
+
+            return ft.Container(
+                **container_kwargs,
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(icon_name, size=24, color=colors["accent"]),
+                            ft.Text(title, size=18, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"])
+                        ], spacing=10),
+                        card_body
+                    ], spacing=16),
+                    padding=ft.padding.all(18),
+                    bgcolor=colors["secondary"],
+                    border_radius=12,
+                    border=ft.border.all(1, colors["border"])
+                )
+            )
+
+        # Conteúdos prontos
+        summary_row = ft.ResponsiveRow(
+            controls=[
+                summary_card("Total de VPCR", indicators["total_vpcrs"], ft.Icons.DASHBOARD, "Registros em acompanhamento"),
+                summary_card("Status distintos", indicators["distinct_status"], ft.Icons.FLAG_CIRCLE, "Quantidade de fases mapeadas"),
+                summary_card("Suppliers ativos", indicators["distinct_suppliers"], ft.Icons.BUSINESS_CENTER, "Parceiros envolvidos"),
+                summary_card("Sourcing Managers", indicators["distinct_sourcing_managers"], ft.Icons.GROUP, "Pontos focais de sourcing")
+            ],
+            spacing=16,
+            run_spacing=16
+        )
+
+        status_card = distribution_card(
+            "Distribuição por Status",
+            ft.Icons.FLAG,
+            indicators["status_counts"],
+            indicators.get("status_percentages"),
+            col_span={"xs": 12, "md": 6}
+        )
+
+        type_card = distribution_card(
+            "Distribuição por Tipo",
+            ft.Icons.CATEGORY,
+            indicators["type_counts"],
+            indicators.get("type_percentages"),
+            col_span=None
+        )
+
+        continuity_card = distribution_card(
+            "Continuity",
+            ft.Icons.TIMELINE,
+            indicators["continuity_counts"],
+            col_span=None
+        )
+
+        type_with_continuity = ft.Container(
+            col={"xs": 12, "md": 6},
+            content=ft.Column([
+                type_card,
+                continuity_card
+            ], spacing=16)
+        )
+
+        distribution_row_primary = ft.ResponsiveRow(
+            controls=[status_card, type_with_continuity],
+            spacing=16,
+            run_spacing=16
+        )
+
+        distribution_row_secondary = ft.ResponsiveRow(
+            controls=[
+                distribution_card(
+                    "Top Suppliers",
+                    ft.Icons.HANDSHAKE,
+                    indicators["top_suppliers"],
+                    top_only=True,
+                    col_span={"xs": 12, "md": 6}
+                ),
+                distribution_card(
+                    "Top Sourcing Managers",
+                    ft.Icons.PEOPLE,
+                    indicators["top_sourcing_managers"],
+                    top_only=True,
+                    col_span={"xs": 12, "md": 6}
+                )
+            ],
+            spacing=16,
+            run_spacing=16
+        )
+
+        # Layout final
+        content_column = ft.Column([
+            ft.Row([
+                ft.Column([
+                    ft.Text("Indicadores VPCR", size=26, weight=ft.FontWeight.BOLD, color=colors["text_container_primary"]),
+                    ft.Text(
+                        "Acompanhe a saúde do pipeline VPCR com métricas resumidas e distribuições detalhadas.",
+                        size=14,
+                        color=colors["text_container_secondary"]
+                    )
+                ], expand=True)
+            ]),
+            summary_row,
+            distribution_row_primary,
+            distribution_row_secondary
+        ], spacing=24, scroll=ft.ScrollMode.AUTO)
+
+        return ft.Container(
+            content=content_column,
+            padding=ft.padding.symmetric(horizontal=24, vertical=20),
+            expand=True
+        )
     
     def create_settings_tab(self):
         """Cria o conteúdo da aba Settings"""

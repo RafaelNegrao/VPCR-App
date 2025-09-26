@@ -6191,6 +6191,46 @@
   ('webbrowser',
    'C:\\Users\\Rafael\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\webbrowser.py',
    'PYMODULE'),
+  ('xlrd',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\__init__.py',
+   'PYMODULE'),
+  ('xlrd.biffh',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\biffh.py',
+   'PYMODULE'),
+  ('xlrd.book',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\book.py',
+   'PYMODULE'),
+  ('xlrd.compdoc',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\compdoc.py',
+   'PYMODULE'),
+  ('xlrd.formatting',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\formatting.py',
+   'PYMODULE'),
+  ('xlrd.formula',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\formula.py',
+   'PYMODULE'),
+  ('xlrd.info',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\info.py',
+   'PYMODULE'),
+  ('xlrd.sheet',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\sheet.py',
+   'PYMODULE'),
+  ('xlrd.timemachine',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\timemachine.py',
+   'PYMODULE'),
+  ('xlrd.xldate',
+   'c:\\Users\\Rafael\\Desktop\\VPCR '
+   'App\\.venv\\Lib\\site-packages\\xlrd\\xldate.py',
+   'PYMODULE'),
   ('xml',
    'C:\\Users\\Rafael\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\xml\\__init__.py',
    'PYMODULE'),

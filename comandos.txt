@@ -1,5 +1,5 @@
 
 
 
-REM Uso correto do nome do módulo (PyInstaller com P maiúsculo) para evitar erro 'No module named pyinstaller'
-py -3.13 -m pyInstaller --onefile --windowed --icon="process.ico" --add-data "cummins.ico;." --name "VPCR Tracker app" main.py
+
+pyInstaller --onefile --windowed --icon="process.ico" --add-data "cummins.ico;." --name "VPCR Tracker app" main.py
