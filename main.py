@@ -3309,8 +3309,8 @@ class VPCRApp:
                 self.expanded_cards.remove(item_id)
             else:
                 self.expanded_cards.add(item_id)
-            # Atualizar apenas este card
-            self.update_card_list(preserve_scroll=True)
+            # Otimização: atualizar apenas este card específico
+            self._update_single_card(item_id)
 
         expand_button = ft.IconButton(
             icon=ft.Icons.KEYBOARD_ARROW_UP if is_expanded else ft.Icons.KEYBOARD_ARROW_DOWN,
@@ -3411,8 +3411,24 @@ class VPCRApp:
     def _create_todos_section(self, item_id, colors, base_font):
         """Cria a seção expansível de TODOs para um card"""
         try:
-            # Buscar TODOs existentes
-            todos = self.db_manager.get_todos_for_item(item_id)
+            # Cache de TODOs para melhor performance
+            if not hasattr(self, '_todos_cache'):
+                self._todos_cache = {}
+            
+            # Buscar TODOs do cache ou banco
+            cache_key = f"todos_{item_id}"
+            if cache_key in self._todos_cache:
+                todos = self._todos_cache[cache_key]
+            else:
+                todos = self.db_manager.get_todos_for_item(item_id)
+                self._todos_cache[cache_key] = todos
+                
+                # Limpar cache após 30 segundos
+                import threading
+                def clear_cache():
+                    if hasattr(self, '_todos_cache') and cache_key in self._todos_cache:
+                        del self._todos_cache[cache_key]
+                threading.Timer(30, clear_cache).start()
             
             todo_rows = []
             
@@ -3428,8 +3444,11 @@ class VPCRApp:
                 # Criar novo TODO vazio no banco
                 new_todo_id = self.db_manager.add_todo(item_id, "")
                 
-                # Atualizar o card para mostrar o novo TODO
-                self.update_card_list(preserve_scroll=True)
+                # Invalidar cache de TODOs
+                self._invalidate_todos_cache(item_id)
+                
+                # Otimização: atualizar apenas este card
+                self._update_single_card(item_id)
             
             add_button = ft.ElevatedButton(
                 text=" Adicionar TODO",
@@ -3471,21 +3490,27 @@ class VPCRApp:
                 """Toggle do status de completado do TODO"""
                 new_status = e.control.value
                 self.db_manager.update_todo(todo_id, completed=new_status)
+                # Invalidar cache mas não atualizar card (mudança visual já aplicada)
+                self._invalidate_todos_cache(item_id)
                 
             def update_description(e):
                 """Atualiza a descrição do TODO"""
                 new_desc = e.control.value.strip()
                 if new_desc:
                     self.db_manager.update_todo(todo_id, description=new_desc)
+                    # Invalidar cache apenas se houve mudança real
+                    self._invalidate_todos_cache(item_id)
                 else:
                     # Se descrição vazia, excluir TODO
                     self.db_manager.delete_todo(todo_id)
-                    self.update_card_list(preserve_scroll=True)
+                    self._invalidate_todos_cache(item_id)
+                    self._update_single_card(item_id)
             
             def delete_todo(e):
                 """Exclui o TODO"""
                 self.db_manager.delete_todo(todo_id)
-                self.update_card_list(preserve_scroll=True)
+                self._invalidate_todos_cache(item_id)
+                self._update_single_card(item_id)
             
             # Checkbox para marcar como completo
             checkbox = ft.Checkbox(
@@ -3530,6 +3555,62 @@ class VPCRApp:
         except Exception as ex:
             print(f"Erro ao criar linha de TODO: {ex}")
             return None
+
+    def _update_single_card(self, item_id):
+        """Atualiza apenas um card específico para melhor performance"""
+        try:
+            if not hasattr(self, 'card_list') or not self.card_list.controls:
+                return
+            
+            # Encontrar o item correspondente
+            target_item = None
+            for item in self.filtered_data:
+                if item.get('ID') == item_id:
+                    target_item = item
+                    break
+            
+            if not target_item:
+                return
+            
+            # Encontrar o índice do card na lista
+            card_index = -1
+            for i, item in enumerate(self.filtered_data):
+                if item.get('ID') == item_id:
+                    card_index = i
+                    break
+            
+            # Verificar se o card existe na lista de controles
+            if card_index >= 0 and card_index < len(self.card_list.controls):
+                try:
+                    # Criar novo card atualizado
+                    new_card = self.create_card(target_item)
+                    
+                    # Substituir o card existente
+                    self.card_list.controls[card_index] = new_card
+                    
+                    # Atualizar apenas este controle
+                    if hasattr(self.card_list, 'update'):
+                        self.card_list.update()
+                        
+                except Exception as e:
+                    print(f"Erro ao atualizar card {item_id}: {e}")
+                    # Fallback: atualizar toda a lista
+                    self.update_card_list(preserve_scroll=True)
+            else:
+                # Se não encontrou, fazer fallback para atualização completa
+                self.update_card_list(preserve_scroll=True)
+                
+        except Exception as e:
+            print(f"Erro na atualização otimizada do card {item_id}: {e}")
+            # Fallback: atualizar toda a lista
+            self.update_card_list(preserve_scroll=True)
+
+    def _invalidate_todos_cache(self, item_id):
+        """Invalida o cache de TODOs para um item específico"""
+        if hasattr(self, '_todos_cache'):
+            cache_key = f"todos_{item_id}"
+            if cache_key in self._todos_cache:
+                del self._todos_cache[cache_key]
     
     def update_card_list(self, preserve_scroll=False):
         """Atualiza a lista de cards de forma otimizada"""
