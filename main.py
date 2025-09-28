@@ -2742,6 +2742,9 @@ class VPCRApp:
         )
 
         self.page.add(self._overlay_stack)
+        
+        # Atualizar título dos filtros na inicialização
+        self._update_filters_title()
 
     def notify(self, message: str, kind: str = "info", auto_hide: int = 3000):
         """Notificação otimizada - evita updates desnecessários"""
@@ -2780,10 +2783,8 @@ class VPCRApp:
         if auto_hide and auto_hide > 0:
             import threading
             def hide_later():
-                import time
-                time.sleep(auto_hide/1000)
                 self.hide_notification()
-            self._notification_timer = threading.Thread(target=hide_later, daemon=True)
+            self._notification_timer = threading.Timer(auto_hide/1000, hide_later)
             self._notification_timer.start()
 
     def hide_notification(self):
@@ -3117,6 +3118,9 @@ class VPCRApp:
                     self.page.update()
             except Exception as ex2:
                 print(f"Erro crítico ao recriar interface: {ex2}")
+        
+        # Atualizar título dos filtros com contagem de VPCRs encontrados
+        self._update_filters_title()
     
     def create_card(self, item):
         """Cria um card para um item com funcionalidade de expansão de TODOs"""
@@ -3218,23 +3222,23 @@ class VPCRApp:
                     # Current Supplier
                     if current_supplier:
                         supplier_row_controls.append(
-                            ft.Text(current_supplier, size=base_font, color=colors["text_container_secondary"])
+                            ft.Text(current_supplier, size=base_font, color=colors["text_container_secondary"], overflow=ft.TextOverflow.ELLIPSIS, no_wrap=True)
                         )
                     else:
                         supplier_row_controls.append(
-                            ft.Text("N/A", size=base_font, color=colors["text_container_secondary"], italic=True)
+                            ft.Text("N/A", size=base_font, color=colors["text_container_secondary"], italic=True, overflow=ft.TextOverflow.ELLIPSIS, no_wrap=True)
                         )
                     
-                    # Seta indicando mudança (apenas se houver proposed supplier)
-                    if proposed_supplier:
+                    # Seta indicando mudança (apenas se houver proposed supplier diferente do current)
+                    if proposed_supplier and proposed_supplier != current_supplier:
                         supplier_row_controls.append(
                             ft.Icon(ft.Icons.ARROW_FORWARD, size=16, color=colors["accent"])
                         )
                         supplier_row_controls.append(
-                            ft.Text(proposed_supplier, size=base_font, color=colors["accent"], weight=ft.FontWeight.BOLD)
+                            ft.Text(proposed_supplier, size=base_font, color=colors["accent"], weight=ft.FontWeight.BOLD, overflow=ft.TextOverflow.ELLIPSIS, no_wrap=True)
                         )
                     
-                    rows.append(ft.Row(supplier_row_controls, spacing=8, alignment=ft.MainAxisAlignment.START))
+                    rows.append(ft.Container(content=ft.Row(supplier_row_controls, spacing=8, alignment=ft.MainAxisAlignment.START), expand=True, clip_behavior=ft.ClipBehavior.HARD_EDGE))
                 continue
             
             # Pular Proposed Supplier quando processar individualmente, já foi tratado junto com Supplier
@@ -5059,14 +5063,13 @@ class VPCRApp:
             self.page.update()
     
     def _update_filters_title(self):
-        """Atualiza o título dos filtros com contador de filtros ativos"""
+        """Atualiza o título dos filtros com contador de VPCRs encontrados"""
         if hasattr(self, 'filters_title_text'):
-            active_count = sum(1 for selections in self.filter_selections.values() if selections)
-            if active_count > 0:
-                title = f"Filtros ({active_count} ativo{'s' if active_count != 1 else ''})"
-            else:
-                title = "Filtros"
+            found_count = len(getattr(self, 'filtered_data', []))
+            has_filters = getattr(self, 'has_any_filter_applied', False)
+            title = f"Filtros ({found_count})" if has_filters and found_count > 0 else "Filtros"
             self.filters_title_text.value = title
+            self.page.update()
 
     def clear_all_filters(self, e=None):
         # limpar todas as seleções de todos os filtros
